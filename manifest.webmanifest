@@ -1,0 +1,9 @@
+{
+  "name": "Deriv Digit AI",
+  "short_name": "Digit AI",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#050805",
+  "theme_color": "#07110b",
+  "icons": []
+}
