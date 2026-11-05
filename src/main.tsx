@@ -464,6 +464,9 @@ function App() {
     if (digits.length < currentSettings.windowSize) return;
     const barrier = getStats(digits).barrier;
     if (barrier < 0) return;
+    for (const [pendingId, pending] of proposalRequestsRef.current) {
+      if (pending.symbol === marketSymbol) proposalRequestsRef.current.delete(pendingId);
+    }
     const reqId = proposalReqIdRef.current++;
     proposalRequestsRef.current.set(reqId, { symbol: marketSymbol, barrier, currency: currentSettings.currency, stake: currentSettings.stake });
     socket.send(JSON.stringify({ proposal: 1, amount: currentSettings.stake, basis: 'stake', contract_type: 'DIGITDIFF', currency: currentSettings.currency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(barrier), req_id: reqId }));
@@ -480,14 +483,20 @@ function App() {
   };
 
   useEffect(() => {
-    if (!authenticated || !settings.currency) { setProposalQuotes({}); return; }
+    if (!authenticated || !settings.currency) { proposalRequestsRef.current.clear(); setProposalQuotes({}); return; }
+    proposalRequestsRef.current.clear();
     setProposalQuotes({});
-    symbols.forEach((item) => requestMarketProposal(item.underlying_symbol));
+    let quoteTimers: number[] = [];
+    const scheduleQuotes = () => {
+      quoteTimers.forEach((timerId) => window.clearTimeout(timerId));
+      quoteTimers = symbols.map((item, index) => window.setTimeout(() => requestMarketProposal(item.underlying_symbol), index * 75));
+    };
+    scheduleQuotes();
     const timer = window.setInterval(() => {
       setProposalQuotes((previous) => Object.fromEntries(Object.entries(previous).filter(([, quote]) => Date.now() - quote.quotedAt <= 90000)));
-      symbols.forEach((item) => requestMarketProposal(item.underlying_symbol));
+      scheduleQuotes();
     }, 60000);
-    return () => window.clearInterval(timer);
+    return () => { window.clearInterval(timer); quoteTimers.forEach((timerId) => window.clearTimeout(timerId)); };
   }, [authenticated, symbols, settings.currency, settings.stake, settings.windowSize]);
 
   const submitLogin = async (event: React.FormEvent) => {
