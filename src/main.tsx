@@ -71,9 +71,13 @@ function App() {
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | undefined>();
   const lastPersistedEpochRef = useRef(0);
+  const persistInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
+    ticksRef.current = [];
+    setTicks([]);
+    lastPersistedEpochRef.current = 0;
     let alive = true;
     let socket: WebSocket | null = null;
     pendingChoiceRef.current = null;
@@ -199,10 +203,12 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!authenticated || !ticks.length) return;
-    const timer = window.setTimeout(async () => {
+    if (!authenticated) return;
+    const timer = window.setInterval(async () => {
+      if (persistInFlightRef.current) return;
       const pending = ticksRef.current.filter((tick) => tick.epoch > lastPersistedEpochRef.current).slice(0, 100);
       if (!pending.length) return;
+      persistInFlightRef.current = true;
       const payload = pending.map((tick) => ({ symbol, epoch: tick.epoch, quote: tick.quote, pipSize: pipSize ?? 0, lastDigit: digitFromQuote(tick.quote, pipSize) }));
       try {
         const response = await fetch('/api/ticks', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticks: payload }) });
@@ -210,9 +216,10 @@ function App() {
         lastPersistedEpochRef.current = pending[pending.length - 1].epoch;
         setBackendStatus('Database connected · ticks saving');
       } catch { setBackendStatus('Tick persistence failed'); }
+      finally { persistInFlightRef.current = false; }
     }, 5000);
-    return () => window.clearTimeout(timer);
-  }, [ticks, authenticated, symbol, pipSize]);
+    return () => window.clearInterval(timer);
+  }, [authenticated, symbol, pipSize]);
 
   useEffect(() => {
     if (!authenticated || !settingsLoaded) return;
