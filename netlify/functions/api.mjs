@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import {
   createHmac,
+  createHash,
   timingSafeEqual,
   randomBytes,
 } from "node:crypto";
@@ -85,14 +86,24 @@ async function handle(request) {
       login_configured: Boolean(process.env.DDPE_LOGIN_PASSWORD && process.env.DDPE_LOGIN_PASSWORD.length >= 16),
       session_secret_configured: Boolean(process.env.DDPE_SESSION_SECRET && process.env.DDPE_SESSION_SECRET.length >= 32),
       database_connected: false,
+      schema_ready: false,
     };
     try {
-      await getSql()`SELECT 1 AS connected`;
+      const sql = getSql();
+      await sql`SELECT 1 AS connected`;
       checks.database_connected = true;
+      const schema = await sql`SELECT
+        to_regclass('public.ddpe_settings') IS NOT NULL AS settings,
+        to_regclass('public.ddpe_ticks') IS NOT NULL AS ticks,
+        to_regclass('public.ddpe_prediction_choices') IS NOT NULL AS choices,
+        to_regclass('public.ddpe_trades') IS NOT NULL AS trades,
+        to_regclass('public.ddpe_daily_risk') IS NOT NULL AS daily_risk,
+        to_regclass('public.ddpe_login_limits') IS NOT NULL AS login_limits`;
+      checks.schema_ready = Boolean(schema[0] && Object.values(schema[0]).every(Boolean));
     } catch (error) {
       return json({ ok: false, checks, error: "Database connection failed. Check DATABASE_URL and Neon network access." }, 503);
     }
-    const ready = checks.login_configured && checks.session_secret_configured;
+    const ready = checks.database_connected && checks.schema_ready && checks.login_configured && checks.session_secret_configured;
     return json({ ok: ready, checks }, ready ? 200 : 503);
   }
 
@@ -102,7 +113,23 @@ async function handle(request) {
     const secret = requiredEnv("DDPE_SESSION_SECRET", 32);
     let body;
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
+    const forwarded = request.headers.get("x-real-ip") || request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const rateKey = createHash("sha256").update(`${forwarded}|${request.headers.get("user-agent") || "unknown"}`).digest("hex");
+    const sql = getSql();
+    const rateRows = await sql`INSERT INTO ddpe_login_limits (attempt_key, window_started_at, attempts, updated_at)
+      VALUES (${rateKey}, NOW(), 1, NOW())
+      ON CONFLICT (attempt_key) DO UPDATE SET
+        attempts = CASE WHEN ddpe_login_limits.window_started_at < NOW() - INTERVAL '15 minutes'
+          THEN 1 ELSE ddpe_login_limits.attempts + 1 END,
+        window_started_at = CASE WHEN ddpe_login_limits.window_started_at < NOW() - INTERVAL '15 minutes'
+          THEN NOW() ELSE ddpe_login_limits.window_started_at END,
+        updated_at = NOW()
+      RETURNING attempts`;
+    if (Number(rateRows[0]?.attempts || 0) > 10) {
+      return json({ error: "Too many login attempts. Try again in 15 minutes." }, 429, { "retry-after": "900" });
+    }
     if (!safeEqual(body?.password || "", password)) return json({ error: "Invalid credentials." }, 401);
+    await sql`DELETE FROM ddpe_login_limits WHERE attempt_key = ${rateKey}`;
     const now = Math.floor(Date.now() / 1000);
     const token = sign({ sub: OWNER_ID, iat: now, exp: now + SESSION_SECONDS, nonce: randomBytes(12).toString("hex") }, secret);
     return json({ ok: true, expires_in: SESSION_SECONDS }, 200, { "set-cookie": sessionCookie(token) });
