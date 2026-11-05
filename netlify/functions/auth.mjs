@@ -1,4 +1,4 @@
-import { clearSessionCookie, createSessionCookie, json, requireOwner, requireSameOrigin, verifyLoginPassword } from "./_lib/auth.mjs";
+import { clearSessionCookie, createSessionCookie, json, requireOwner, requireSameOrigin, verifyLoginPassword } from "../lib/auth.mjs";
 
 export const config = { path: "/api/auth" };
 
