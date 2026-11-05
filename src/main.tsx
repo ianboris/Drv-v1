@@ -148,7 +148,7 @@ function App() {
             const tickPipSize = response.tick.pip_size !== undefined
               ? Number(response.tick.pip_size)
               : pipSizeRef.current;
-            if (response.tick.pip_size !== undefined && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10) {
+            if (response.tick.pip_size !== undefined && typeof tickPipSize === 'number' && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10) {
               setPipSize(tickPipSize);
               pipSizeRef.current = tickPipSize;
             }
@@ -325,7 +325,7 @@ function App() {
       })
       .then((data) => {
         if (!active || !Array.isArray(data.choices)) return;
-        setChoiceOutcomes(data.choices);
+        setChoiceOutcomes([...data.choices].sort((a, b) => a.settledEpoch - b.settledEpoch));
         try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(data.choices)); } catch {}
       })
       .catch(() => { if (active) setBackendStatus('Prediction history unavailable'); });
