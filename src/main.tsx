@@ -51,6 +51,12 @@ function App() {
   const [pipSize, setPipSize] = useState<number>();
   const [status, setStatus] = useState('CONNECTING');
   const [error, setError] = useState('');
+  const [authenticated, setAuthenticated] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [backendStatus, setBackendStatus] = useState('Checking backend');
   const [settings, setSettings] = useState<Settings>(readSettings);
   const [saved, setSaved] = useState(true);
   const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
@@ -64,8 +70,14 @@ function App() {
   windowSizeRef.current = settings.windowSize;
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | undefined>();
+  const lastPersistedEpochRef = useRef(0);
+  const persistInFlightRef = useRef(false);
 
   useEffect(() => {
+    if (!authenticated) { setStatus('LOCKED'); return; }
+    ticksRef.current = [];
+    setTicks([]);
+    lastPersistedEpochRef.current = 0;
     let alive = true;
     let socket: WebSocket | null = null;
     pendingChoiceRef.current = null;
@@ -105,6 +117,7 @@ function App() {
             const nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
             ticksRef.current = nextTicks;
             setTicks(nextTicks);
+            if (history.length) lastPersistedEpochRef.current = Math.max(lastPersistedEpochRef.current, ...history.map((tick) => tick.epoch));
             if (response.pip_size !== undefined) { setPipSize(Number(response.pip_size)); pipSizeRef.current = Number(response.pip_size); }
           }
           if (response.msg_type === 'tick' && response.tick) {
@@ -165,14 +178,65 @@ function App() {
       }
       if (ws.current === socket) ws.current = null;
     };
-  }, [symbol]);
+  }, [symbol, authenticated]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('ddpe-settings-v1', JSON.stringify(settings));
-      setSaved(true);
-    } catch { setSaved(false); }
-  }, [settings]);
+    let active = true;
+    fetch('/api/health', { cache: 'no-store' }).then((response) => response.json()).then((data) => {
+      if (active) setBackendStatus(data?.checks?.database_connected ? 'Database connected' : 'Backend needs configuration');
+    }).catch(() => { if (active) setBackendStatus('Backend unavailable'); });
+    fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' }).then(async (response) => {
+      if (!response.ok) return null;
+      return response.json();
+    }).then(async (session) => {
+      if (!active || !session?.authenticated) return;
+      const response = await fetch('/api/settings', { credentials: 'same-origin', cache: 'no-store' });
+      if (!response.ok) throw new Error('Could not load saved settings from the backend.');
+      const remote = await response.json();
+      if (!active) return;
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize) });
+      setAuthenticated(true);
+      setSettingsLoaded(true);
+    }).catch((reason) => { if (active) setLoginError(reason instanceof Error ? reason.message : 'Backend session check failed.'); })
+      .finally(() => { if (active) setAuthChecking(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    const timer = window.setInterval(async () => {
+      if (persistInFlightRef.current) return;
+      const pending = ticksRef.current.filter((tick) => tick.epoch > lastPersistedEpochRef.current).slice(0, 100);
+      if (!pending.length) return;
+      persistInFlightRef.current = true;
+      const payload = pending.map((tick) => ({ symbol, epoch: tick.epoch, quote: tick.quote, pip_size: pipSize ?? 0, last_digit: digitFromQuote(tick.quote, pipSize) }));
+      try {
+        const response = await fetch('/api/ticks', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticks: payload }) });
+        if (!response.ok) throw new Error('Tick persistence rejected.');
+        lastPersistedEpochRef.current = pending[pending.length - 1].epoch;
+        setBackendStatus('Database connected · ticks saving');
+      } catch { setBackendStatus('Tick persistence failed'); }
+      finally { persistInFlightRef.current = false; }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [authenticated, symbol, pipSize]);
+
+  useEffect(() => {
+    if (!authenticated || !settingsLoaded) return;
+    if (!(settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000)) {
+      setSaved(false);
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(() => {
+      setSaved(false);
+      fetch('/api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) })
+        .then((response) => { if (!response.ok) throw new Error('Server rejected settings.'); return response.json(); })
+        .then(() => { if (active) setSaved(true); })
+        .catch(() => { if (active) { setSaved(false); setBackendStatus('Settings save failed'); } });
+    }, 500);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [settings, authenticated, settingsLoaded]);
 
   const digits = useMemo(() => ticks.map((tick) => digitFromQuote(tick.quote, pipSize)), [ticks, pipSize]);
   const rollingDigits = digits.slice(-settings.windowSize);
@@ -189,10 +253,37 @@ function App() {
   };
   const validSettings = settings.stake > 0 && settings.dailyLossLimit > 0 && settings.windowSize >= 50;
 
+  const submitLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setLoginError('');
+    try {
+      const response = await fetch('/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: loginPassword }) });
+      if (!response.ok) throw new Error(response.status === 401 ? 'Incorrect app password.' : 'Login service is not ready. Check backend configuration.');
+      const savedResponse = await fetch('/api/settings', { credentials: 'same-origin', cache: 'no-store' });
+      if (!savedResponse.ok) throw new Error('Login succeeded, but settings could not be loaded from Neon.');
+      const remote = await savedResponse.json();
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize) });
+      setSettingsLoaded(true);
+      setAuthenticated(true);
+      setLoginPassword('');
+    } catch (reason) { setLoginError(reason instanceof Error ? reason.message : 'Login failed.'); }
+  };
+
+  const logout = async () => {
+    await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => undefined);
+    setAuthenticated(false);
+    setSettingsLoaded(false);
+    setTicks([]);
+    ticksRef.current = [];
+  };
+
+  if (authChecking) return <main className="login-shell"><section className="panel login-panel"><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Checking secure session</h1><p className="muted">{backendStatus}</p></section></main>;
+  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Sign in</h1><p className="muted">Use the private app password configured in Netlify. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
+
   return <main>
     <header className="topbar">
       <div><div className="eyebrow">DDPE · DERIV DIFFERS</div><h1>Digit Prediction Engine</h1><p className="subhead">Live market research and risk controls</p></div>
-      <span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span>
+      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
@@ -282,7 +373,7 @@ function App() {
 
     {tab === 'settings' && <>
       <section className="panel settings-panel">
-        <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Initial limits are set to your requested values.</p></div><span className="saved-state">{saved ? 'Saved on this device' : 'Saving…'}</span></div>
+        <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Settings are stored in Neon through the private backend.</p></div><span className="saved-state">{saved ? 'Saved to Neon' : validSettings ? (backendStatus === 'Settings save failed' ? 'Save failed' : 'Saving…') : 'Check values'}</span></div>
         <label className="setting-field">Stake per trade (USD)
           <div className="input-wrap"><span>$</span><input type="number" min="0.35" max="1000" step="0.01" value={settings.stake} onChange={(event) => changeSetting('stake', Number(event.target.value))} /></div>
           <small>Applied as the proposed contract stake when execution is enabled. Deriv minimums and account currency will still be checked by the backend.</small>
@@ -302,13 +393,13 @@ function App() {
         <div className="section-heading">EXECUTION SAFETY</div>
         <ul>
           <li>Live trading remains disabled in this build.</li>
-          <li>Risk settings currently persist in this browser only. They are not yet stored in Neon or enforced by a server-side worker.</li>
-          <li>Before enabling execution, the backend must revalidate limits, track settled net P/L by Uganda-local trading day, and reject duplicate orders.</li>
+          <li>Stake, daily loss limit and analysis window are saved through the authenticated backend in Neon.</li>
+          <li>The server-side daily loss stop is not yet connected to real contract settlements. Live execution remains disabled.</li>
         </ul>
       </section>
     </>}
 
-    <footer>DDPE research interface · public Deriv tick feed · no order execution in this build</footer>
+    <footer>DDPE private research interface · {backendStatus} · no order execution in this build</footer>
   </main>;
 }
 

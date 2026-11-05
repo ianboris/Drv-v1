@@ -1,0 +1,29 @@
+name: DDPE build verification
+
+on:
+  pull_request:
+    branches:
+      - main
+      - repair/build-fix
+      - feature/mobile-three-tab-risk-settings
+      - feature/differs-accuracy-strip
+  push:
+    branches:
+      - feature/secure-neon-backend
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install
+      - name: Check Netlify function syntax
+        run: node --check netlify/functions/api.mjs
+      - name: Run TypeScript and Vite production build
+        run: npm run build
