@@ -8,10 +8,13 @@ on:
       - feature/mobile-three-tab-risk-settings
       - feature/differs-accuracy-strip
       - feature/secure-neon-backend
+      - deploy/vercel-neon-adapter
+      - fix/ddpe-runtime-data-integrity
   push:
     branches:
       - feature/secure-neon-backend
       - deploy/vercel-neon-adapter
+      - fix/ddpe-runtime-data-integrity
 
 jobs:
   build:
