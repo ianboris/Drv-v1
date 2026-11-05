@@ -397,7 +397,7 @@ function App() {
     setSettings((current) => ({ ...current, [key]: value }));
     setSaved(false);
   };
-  const validSettings = settings.stake > 0 && settings.dailyLossLimit > 0 && settings.windowSize >= 50;
+  const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
 
   const selectSymbol = (nextSymbol: string) => {
     if (nextSymbol === selectedSymbolRef.current) return;
@@ -472,8 +472,8 @@ function App() {
         </div>
         <div className="panel risk-panel">
           <div className="section-heading">RISK SETTINGS</div>
-          <div className="risk-value"><span>Stake per trade</span><strong>${settings.stake.toFixed(2)}</strong></div>
-          <div className="risk-value"><span>Daily loss stop</span><strong>${settings.dailyLossLimit.toFixed(2)}</strong></div>
+          <div className="risk-value"><span>Stake per trade</span><strong>{settings.stake.toFixed(2)} units</strong></div>
+          <div className="risk-value"><span>Daily loss stop</span><strong>{settings.dailyLossLimit.toFixed(2)} units</strong></div>
           <div className="risk-value"><span>Loss limit usage</span><strong>Not connected</strong></div>
           <button className="secondary-button" onClick={() => setTab('settings')}>Adjust settings</button>
         </div>
@@ -530,11 +530,11 @@ function App() {
     {tab === 'settings' && <>
       <section className="panel settings-panel">
         <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Settings are stored in Neon through the private backend.</p></div><span className="saved-state">{saved ? 'Saved to Neon' : validSettings ? (backendStatus === 'Settings save failed' ? 'Save failed' : 'Saving…') : 'Check values'}</span></div>
-        <label className="setting-field">Stake per trade (USD)
+        <label className="setting-field">Stake per trade (account currency)
           <div className="input-wrap"><span>$</span><input type="number" min="0.35" max="1000" step="0.01" value={settings.stake} onChange={(event) => changeSetting('stake', Number(event.target.value))} /></div>
           <small>Applied as the proposed contract stake when execution is enabled. Deriv minimums and account currency will still be checked by the backend.</small>
         </label>
-        <label className="setting-field">Maximum daily loss (USD)
+        <label className="setting-field">Maximum daily loss (account currency)
           <div className="input-wrap"><span>$</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.dailyLossLimit} onChange={(event) => changeSetting('dailyLossLimit', Number(event.target.value))} /></div>
           <small>Hard stop: the execution service must block new purchases once the realised daily net loss reaches this amount.</small>
         </label>
@@ -542,15 +542,15 @@ function App() {
           <div className="input-wrap"><input type="number" min="50" max="5000" step="50" value={settings.windowSize} onChange={(event) => changeSetting('windowSize', Number(event.target.value))} /></div>
           <small>Changes the displayed rolling statistics. It does not by itself improve predictive accuracy.</small>
         </label>
-        {!validSettings && <div className="validation-error">Enter positive stake and loss values, and a window of at least 50 ticks.</div>}
-        <div className="settings-actions"><button className="secondary-button" onClick={() => setSettings(DEFAULT_SETTINGS)}>Restore defaults</button><span className="default-note">Defaults: $1 stake · $2 daily loss</span></div>
+        {!validSettings && <div className="validation-error">Use stake 0–1,000, daily loss 0–10,000, and an integer window of 50–5,000 ticks.</div>}
+        <div className="settings-actions"><button className="secondary-button" onClick={() => setSettings(DEFAULT_SETTINGS)}>Restore defaults</button><span className="default-note">Defaults: 1.00 stake · 2.00 daily loss</span></div>
       </section>
       <section className="panel safety-panel">
         <div className="section-heading">EXECUTION SAFETY</div>
         <ul>
           <li>Live trading remains disabled in this build.</li>
           <li>Stake, daily loss limit and analysis window are saved through the authenticated backend in Neon.</li>
-          <li>The server-side daily loss stop is not yet connected to real contract settlements. Live execution remains disabled.</li>
+          <li>The server-side daily loss stop is not yet connected to real contract settlements. Account currency has not been verified. Live execution remains disabled.</li>
         </ul>
       </section>
     </>}
