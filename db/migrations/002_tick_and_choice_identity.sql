@@ -59,6 +59,9 @@ BEGIN
 END $$;
 
 ALTER TABLE ddpe_prediction_choices
+  DROP CONSTRAINT IF EXISTS ddpe_choices_settlement_order_check;
+
+ALTER TABLE ddpe_prediction_choices
   ADD CONSTRAINT ddpe_choices_settlement_order_check
   CHECK (
     (settled_at_epoch IS NULL AND outcome_digit IS NULL AND is_correct IS NULL)
