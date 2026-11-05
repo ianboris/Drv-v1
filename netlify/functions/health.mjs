@@ -1,4 +1,4 @@
-import { db, hasEnv, json } from "./_lib/auth.mjs";
+import { db, hasEnv, json } from "../lib/auth.mjs";
 
 export const config = { path: "/api/health" };
 
