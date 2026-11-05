@@ -105,7 +105,7 @@ function App() {
             setSymbols(list);
             if (list.length && !list.some((item) => item.underlying_symbol === symbol)) {
               const first = list[0].underlying_symbol;
-              if (first) setSymbol(first);
+              if (first) selectSymbol(first);
             }
           }
           if (response.msg_type === 'history') {
@@ -366,6 +366,16 @@ function App() {
   };
   const validSettings = settings.stake > 0 && settings.dailyLossLimit > 0 && settings.windowSize >= 50;
 
+  const selectSymbol = (nextSymbol: string) => {
+    if (nextSymbol === symbol) return;
+    setSymbol(nextSymbol);
+    setTicks([]);
+    ticksRef.current = [];
+    setPipSize(undefined);
+    pipSizeRef.current = undefined;
+    pendingChoiceRef.current = null;
+  };
+
   const submitLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoginError('');
@@ -410,7 +420,7 @@ function App() {
     {tab === 'overview' && <>
       <section className="panel market-panel">
         <label className="field">Market
-          <select value={symbol} onChange={(event) => setSymbol(event.target.value)}>
+          <select value={symbol} onChange={(event) => selectSymbol(event.target.value)}>
             {symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}
           </select>
         </label>
