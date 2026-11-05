@@ -66,3 +66,11 @@ ALTER TABLE ddpe_prediction_choices
     (settled_at_epoch IS NOT NULL AND outcome_digit IS NOT NULL AND is_correct IS NOT NULL
       AND settled_at_epoch >= predicted_at_epoch)
   );
+
+-- Persist failed-login throttling across serverless function instances.
+CREATE TABLE IF NOT EXISTS ddpe_login_limits (
+  attempt_key TEXT PRIMARY KEY,
+  window_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
