@@ -209,7 +209,7 @@ function App() {
       const pending = ticksRef.current.filter((tick) => tick.epoch > lastPersistedEpochRef.current).slice(0, 100);
       if (!pending.length) return;
       persistInFlightRef.current = true;
-      const payload = pending.map((tick) => ({ symbol, epoch: tick.epoch, quote: tick.quote, pipSize: pipSize ?? 0, lastDigit: digitFromQuote(tick.quote, pipSize) }));
+      const payload = pending.map((tick) => ({ symbol, epoch: tick.epoch, quote: tick.quote, pip_size: pipSize ?? 0, last_digit: digitFromQuote(tick.quote, pipSize) }));
       try {
         const response = await fetch('/api/ticks', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticks: payload }) });
         if (!response.ok) throw new Error('Tick persistence rejected.');
