@@ -5,10 +5,12 @@ import './style.css';
 const WS = 'wss://ws.derivws.com/websockets/v3?app_id=1089';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
-type Settings = { stake: number; dailyLossLimit: number; windowSize: number };
+type Settings = { stake: number; dailyLossLimit: number; windowSize: number; currency: string };
+type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
+type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
 type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean; analysisWindow?: number };
 type Tab = 'overview' | 'activity' | 'settings';
-const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100 };
+const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100, currency: '' };
 
 function readSettings(): Settings {
   try {
@@ -18,7 +20,8 @@ function readSettings(): Settings {
     return {
       stake: Number.isFinite(parsed.stake) && Number(parsed.stake) > 0 ? Number(parsed.stake) : 1,
       dailyLossLimit: Number.isFinite(parsed.dailyLossLimit) && Number(parsed.dailyLossLimit) > 0 ? Number(parsed.dailyLossLimit) : 2,
-      windowSize: Number.isFinite(parsed.windowSize) && Number(parsed.windowSize) >= 50 ? Math.min(5000, Math.round(Number(parsed.windowSize))) : 100
+      windowSize: Number.isFinite(parsed.windowSize) && Number(parsed.windowSize) >= 50 ? Math.min(5000, Math.round(Number(parsed.windowSize))) : 100,
+      currency: typeof parsed.currency === 'string' ? parsed.currency.trim().toUpperCase() : ''
     };
   } catch { return DEFAULT_SETTINGS; }
 }
@@ -43,6 +46,13 @@ function getStats(digits: number[]) {
   return { counts, probabilities, entropy, barrier, barrierRate: barrier >= 0 ? probabilities[barrier] : 0, sample: n };
 }
 
+function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
+  if (!total) return 0;
+  const p = wins / total;
+  const z2 = z * z;
+  return (p + z2 / (2 * total) - z * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total)) / (1 + z2 / total);
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>('overview');
   const [symbol, setSymbol] = useState('1HZ100V');
@@ -59,6 +69,8 @@ function App() {
   const [backendStatus, setBackendStatus] = useState('Checking backend');
   const [settings, setSettings] = useState<Settings>(readSettings);
   const [saved, setSaved] = useState(true);
+  const [proposalQuotes, setProposalQuotes] = useState<Record<string, ProposalQuote>>({});
+  const [choiceAggregates, setChoiceAggregates] = useState<ChoiceAggregate[]>([]);
   const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
     try { return JSON.parse(localStorage.getItem('ddpe-choice-outcomes-v1') || '[]') as ChoiceOutcome[]; }
     catch { return []; }
@@ -75,6 +87,10 @@ function App() {
   const reconnectTimer = useRef<number | undefined>();
   const pendingTicksRef = useRef<Array<{ tick_uid: string; symbol: string; epoch: number; quote: number; pip_size: number; last_digit: number }>>([]);
   const persistInFlightRef = useRef(false);
+  const proposalRequestsRef = useRef(new Map<number, { symbol: string; barrier: number; currency: string; stake: number }>());
+  const proposalReqIdRef = useRef(3000);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
@@ -104,7 +120,25 @@ function App() {
         if (!alive) return;
         try {
           const response = JSON.parse(event.data);
-          if (response.error) { setError(response.error.message || 'Deriv API error'); return; }
+          if (response.error) {
+            const failedReqId = Number(response.req_id);
+            if (Number.isInteger(failedReqId)) proposalRequestsRef.current.delete(failedReqId);
+            setError(response.error.message || 'Deriv API error');
+            return;
+          }
+          if (response.msg_type === 'proposal' && response.proposal) {
+            const reqId = Number(response.req_id);
+            const request = proposalRequestsRef.current.get(reqId);
+            if (request && request.currency === settingsRef.current.currency && request.stake === settingsRef.current.stake) {
+              const askPrice = Number(response.proposal.ask_price);
+              const payout = Number(response.proposal.payout);
+              if (Number.isFinite(askPrice) && askPrice > 0 && Number.isFinite(payout) && payout > askPrice) {
+                setProposalQuotes((previous) => ({ ...previous, [request.symbol]: { barrier: request.barrier, askPrice, payout, quotedAt: Date.now() } }));
+              }
+              proposalRequestsRef.current.delete(reqId);
+            }
+            return;
+          }
           if (response.msg_type === 'active_symbols') {
             const list: ActiveSymbol[] = response.active_symbols || [];
             setSymbols(list);
@@ -169,6 +203,7 @@ function App() {
               });
             }
             ticksBySymbolRef.current.set(historySymbol, nextTicks);
+            requestMarketProposal(historySymbol, nextTicks);
             if (historySymbol === selectedSymbolRef.current) {
               ticksRef.current = nextTicks;
               setTicks(nextTicks);
@@ -223,6 +258,11 @@ function App() {
                       const updated = [...previous.filter((item) => item.id !== outcome.id), outcome].slice(-5000);
                       try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(updated)); } catch {}
                       return updated;
+                    });
+                    setChoiceAggregates((previous) => {
+                      const existing = previous.find((item) => item.symbol === outcome.symbol && item.barrier === outcome.barrier);
+                      if (existing) return previous.map((item) => item === existing ? { ...item, total: item.total + 1, wins: item.wins + (outcome.correct ? 1 : 0) } : item);
+                      return [...previous, { symbol: outcome.symbol, barrier: outcome.barrier, total: 1, wins: outcome.correct ? 1 : 0 }];
                     });
                     fetch('/api/choices', {
                       method: 'POST',
@@ -318,7 +358,7 @@ function App() {
       if (!response.ok) throw new Error('Could not load saved settings from the backend.');
       const remote = await response.json();
       if (!active) return;
-      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize) });
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
       setAuthenticated(true);
       setSettingsLoaded(true);
     }).catch((reason) => { if (active) setLoginError(reason instanceof Error ? reason.message : 'Backend session check failed.'); })
@@ -355,7 +395,7 @@ function App() {
   useEffect(() => {
     if (!authenticated) return;
     let active = true;
-    fetch(`/api/choices?symbol=${encodeURIComponent(symbol)}`, { credentials: 'same-origin', cache: 'no-store' })
+    fetch('/api/choices', { credentials: 'same-origin', cache: 'no-store' })
       .then(async (response) => {
         if (!response.ok) throw new Error('Could not load paper choices from Neon.');
         return response.json();
@@ -363,11 +403,12 @@ function App() {
       .then((data) => {
         if (!active || !Array.isArray(data.choices)) return;
         setChoiceOutcomes([...data.choices].sort((a, b) => a.settledEpoch - b.settledEpoch));
+        setChoiceAggregates(Array.isArray(data.aggregates) ? data.aggregates : []);
         try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(data.choices)); } catch {}
       })
       .catch(() => { if (active) setBackendStatus('Prediction history unavailable'); });
     return () => { active = false; };
-  }, [authenticated, symbol]);
+  }, [authenticated]);
 
   useEffect(() => {
     if (!authenticated || !settingsLoaded) return;
@@ -391,15 +432,50 @@ function App() {
   const stats = useMemo(() => getStats(rollingDigits), [rollingDigits]);
   const overallStats = useMemo(() => getStats(digits), [digits]);
   const marketName = symbols.find((item) => item.underlying_symbol === symbol)?.underlying_symbol_name || symbol;
+  const scannerRows = useMemo(() => symbols.map((item) => {
+    const history = choiceAggregates.filter((choice) => choice.symbol === item.underlying_symbol);
+    const wins = history.reduce((sum, choice) => sum + choice.wins, 0);
+    const total = history.reduce((sum, choice) => sum + choice.total, 0);
+    const storedQuote = proposalQuotes[item.underlying_symbol];
+    const quote = storedQuote && Date.now() - storedQuote.quotedAt <= 90000 ? storedQuote : undefined;
+    const winRate = total ? wins / total : null;
+    const matched = quote ? history.find((choice) => choice.barrier === quote.barrier) : undefined;
+    const matchedSample = matched?.total ?? 0;
+    const matchedWins = matched?.wins ?? 0;
+    const matchedWinRate = matchedSample ? matchedWins / matchedSample : null;
+    const conservativeWinRate = matchedSample ? wilsonLowerBound(matchedWins, matchedSample) : null;
+    const conservativeEv = quote && matchedSample >= 100 && conservativeWinRate !== null ? conservativeWinRate * quote.payout - quote.askPrice : null;
+    return { symbol: item.underlying_symbol, name: item.underlying_symbol_name || item.underlying_symbol, total, wins, winRate, matchedSample, matchedWinRate, conservativeWinRate, quote, conservativeEv };
+  }).sort((a, b) => (b.conservativeEv ?? -Infinity) - (a.conservativeEv ?? -Infinity)), [symbols, choiceAggregates, proposalQuotes]);
+  const qualifiedMarkets = scannerRows.filter((row) => row.matchedSample >= 100 && row.quote && row.conservativeEv !== null && row.conservativeEv > 0);
+  const bestMarket = qualifiedMarkets[0] || null;
+  const highestWinRateMarket = scannerRows.filter((row) => row.total >= 100 && row.winRate !== null).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1))[0] || null;
   const differsEstimate = stats.sample ? (1 - stats.barrierRate) * 100 : 0;
   const symbolOutcomes = choiceOutcomes.filter((item) => item.symbol === symbol);
   const settledCorrect = symbolOutcomes.filter((item) => item.correct).length;
   const settledAccuracy = symbolOutcomes.length ? settledCorrect / symbolOutcomes.length * 100 : null;
-  const changeSetting = (key: keyof Settings, value: number) => {
-    setSettings((current) => ({ ...current, [key]: value }));
+  const changeSetting = (key: keyof Settings, value: number | string) => {
+    setSettings((current) => ({ ...current, [key]: value } as Settings));
     setSaved(false);
   };
   const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
+
+  function requestMarketProposal(marketSymbol: string, marketTicks?: Tick[]) {
+    const currentSettings = settingsRef.current;
+    const socket = ws.current;
+    if (!currentSettings.currency || !socket || socket.readyState !== WebSocket.OPEN) return;
+    const sourceTicks = marketTicks || ticksBySymbolRef.current.get(marketSymbol) || [];
+    const digits = sourceTicks.slice(-currentSettings.windowSize).map((tick) => tick.lastDigit ?? digitFromQuote(tick.quote, tick.pipSize));
+    if (digits.length < currentSettings.windowSize) return;
+    const barrier = getStats(digits).barrier;
+    if (barrier < 0) return;
+    for (const [pendingId, pending] of proposalRequestsRef.current) {
+      if (pending.symbol === marketSymbol) proposalRequestsRef.current.delete(pendingId);
+    }
+    const reqId = proposalReqIdRef.current++;
+    proposalRequestsRef.current.set(reqId, { symbol: marketSymbol, barrier, currency: currentSettings.currency, stake: currentSettings.stake });
+    socket.send(JSON.stringify({ proposal: 1, amount: currentSettings.stake, basis: 'stake', contract_type: 'DIGITDIFF', currency: currentSettings.currency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(barrier), req_id: reqId }));
+  }
 
   const selectSymbol = (nextSymbol: string) => {
     if (nextSymbol === selectedSymbolRef.current) return;
@@ -411,6 +487,23 @@ function App() {
     setPipSize(pipSizesBySymbolRef.current.get(nextSymbol));
   };
 
+  useEffect(() => {
+    if (!authenticated || !settings.currency) { proposalRequestsRef.current.clear(); setProposalQuotes({}); return; }
+    proposalRequestsRef.current.clear();
+    setProposalQuotes({});
+    let quoteTimers: number[] = [];
+    const scheduleQuotes = () => {
+      quoteTimers.forEach((timerId) => window.clearTimeout(timerId));
+      quoteTimers = symbols.map((item, index) => window.setTimeout(() => requestMarketProposal(item.underlying_symbol), index * 75));
+    };
+    scheduleQuotes();
+    const timer = window.setInterval(() => {
+      setProposalQuotes((previous) => Object.fromEntries(Object.entries(previous).filter(([, quote]) => Date.now() - quote.quotedAt <= 90000)));
+      scheduleQuotes();
+    }, 60000);
+    return () => { window.clearInterval(timer); quoteTimers.forEach((timerId) => window.clearTimeout(timerId)); };
+  }, [authenticated, symbols, settings.currency, settings.stake, settings.windowSize]);
+
   const submitLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoginError('');
@@ -420,7 +513,7 @@ function App() {
       const savedResponse = await fetch('/api/settings', { credentials: 'same-origin', cache: 'no-store' });
       if (!savedResponse.ok) throw new Error('Login succeeded, but settings could not be loaded from Neon.');
       const remote = await savedResponse.json();
-      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize) });
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
       setSettingsLoaded(true);
       setAuthenticated(true);
       setLoginPassword('');
@@ -471,6 +564,7 @@ function App() {
           <div className="candidate-row"><span>Least frequent digit candidate</span><strong>{stats.barrier >= 0 ? stats.barrier : '—'}</strong></div>
           <div className="candidate-row"><span>Observed Differs rate vs candidate</span><strong>{stats.sample ? differsEstimate.toFixed(2) + '%' : '—'}</strong></div>
           <div className="candidate-row"><span>Reference baseline</span><strong>90.00%</strong></div>
+          <div className="candidate-row"><span>Settled paper choices</span><strong>{symbolOutcomes.length}</strong></div>
         </div>
         <div className="panel risk-panel">
           <div className="section-heading">RISK SETTINGS</div>
@@ -479,6 +573,17 @@ function App() {
           <div className="risk-value"><span>Loss limit usage</span><strong>Not connected</strong></div>
           <button className="secondary-button" onClick={() => setTab('settings')}>Adjust settings</button>
         </div>
+      </section>
+
+      <section className="panel market-scanner">
+        <div className="panel-title"><div><div className="section-heading">MARKET PROFITABILITY SCANNER</div><p className="muted">All eligible markets · live one-tick DIGITDIFF quotes · settled paper outcomes.</p></div><span className="live-dot">{settings.currency ? 'SCANNING' : 'SET CURRENCY'}</span></div>
+        {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed win rate (100+ outcomes)</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% observed win rate from {highestWinRateMarket.total} settled paper outcomes</small></div>}
+        {bestMarket ? <div className="scanner-leader"><span>Best profitability-qualified candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed win rate · barrier {bestMarket.quote!.barrier} · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} conservative EV per contract</small></div> : <p className="muted">No market has met every profitability gate yet: at least 100 settled paper outcomes for the exact quoted barrier, a fresh proposal quote in your account currency, and positive conservative expected value. The scanner will not call an under-sampled market profitable.</p>}
+        <div className="table-wrap"><table><thead><tr><th>Market</th><th>Barrier</th><th>Settled / matched</th><th>Strategy win rate</th><th>Quoted-barrier win rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Conservative EV</th><th>Gate</th></tr></thead><tbody>
+          {scannerRows.map((row) => <tr key={row.symbol}><td><button className="text-button" onClick={() => selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.quote ? row.quote.barrier : '—'}</td><td>{row.total} / {row.matchedSample}</td><td>{row.winRate === null ? '—' : (row.winRate * 100).toFixed(2) + '%'}</td><td>{row.matchedWinRate === null ? '—' : (row.matchedWinRate * 100).toFixed(2) + '%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate * 100).toFixed(2) + '%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv >= 0 ? '+' : ''}${row.conservativeEv.toFixed(4)} ${settings.currency}`}</td><td>{!row.quote ? 'Need live quote' : row.matchedSample < 100 ? 'Need 100 barrier matches' : row.conservativeEv! > 0 ? 'Positive estimate' : 'Not profitable'}</td></tr>)}
+          {!scannerRows.length && <tr><td colSpan={9} className="empty">Waiting for eligible Differs markets…</td></tr>}
+        </tbody></table></div>
+        <small className="muted">Conservative EV = Wilson 95% lower-bound win probability for the currently quoted barrier × gross payout − ask price. Strategy-wide win rate is shown separately. Outcomes are paper predictions, not actual contract settlements; serial dependence and market-selection bias are not corrected. Positive estimates are not proof of future profitability.</small>
       </section>
 
       <section className="panel">
@@ -540,6 +645,10 @@ function App() {
           <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.dailyLossLimit} onChange={(event) => changeSetting('dailyLossLimit', Number(event.target.value))} /></div>
           <small>Hard stop: the execution service must block new purchases once the realised daily net loss reaches this amount.</small>
         </label>
+        <label className="setting-field">Deriv account currency
+          <input type="text" maxLength={20} autoCapitalize="characters" placeholder="e.g. USD, EUR, USDT" value={settings.currency} onChange={(event) => changeSetting('currency', event.target.value.trim().toUpperCase())} />
+          <small>Enter the exact currency displayed in your Deriv account. Do not guess. This is required for comparable proposal prices.</small>
+        </label>
         <label className="setting-field">Analysis window (ticks)
           <div className="input-wrap"><input type="number" min="50" max="5000" step="50" value={settings.windowSize} onChange={(event) => changeSetting('windowSize', Number(event.target.value))} /></div>
           <small>Changes the displayed rolling statistics. It does not by itself improve predictive accuracy.</small>
@@ -550,7 +659,8 @@ function App() {
       <section className="panel safety-panel">
         <div className="section-heading">EXECUTION SAFETY</div>
         <ul>
-          <li>Live trading remains disabled in this build.</li>
+          <li>Live trading remains disabled. The scanner only requests proposal prices and records paper outcomes.</li>
+          <li>Profitability estimates use live ask/payout quotes and a 95% Wilson lower confidence bound on the observed paper win rate.</li>
           <li>Stake, daily loss limit and analysis window are saved through the authenticated backend in Neon.</li>
           <li>The server-side daily loss stop is not yet connected to real contract settlements. Account currency has not been verified. Live execution remains disabled.</li>
         </ul>

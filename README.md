@@ -35,6 +35,14 @@ The app is a static Vite site. Configure the hosting provider with:
 - Build command: `npm run build`
 - Publish directory: `dist`
 
+## Database migrations
+
+Apply these files in the Neon SQL Editor in order: `001_ddpe_core.sql`, `002_tick_and_choice_identity.sql`, then `003_market_scanner_currency.sql`. Run them as ordinary SQL scripts. Do **not** use Explain, Explain Analyze, or a query-plan tool on migrations: PostgreSQL `EXPLAIN` accepts query/DML statements, not schema-changing `ALTER TABLE` commands. Do not prepend `EXPLAIN` to migration SQL.
+
+## Market scanner
+
+The scanner monitors every returned `DIGITDIFF`-eligible market, records one-tick paper outcomes, requests live one-tick proposals in the configured Deriv account currency, and ranks markets by conservative estimated expected value. It requires at least 100 settled paper outcomes for the exact currently quoted barrier and uses the 95% Wilson lower confidence bound for that barrier's win probability. It also shows the overall strategy win rate separately. It does not execute contracts. Paper outcomes are not actual contract profitability; use forward testing and actual settlement records before enabling any execution.
+
 ## Scope and limitations
 
-This repository currently contains a public-market-data research interface only. It does not authenticate a Deriv account, submit proposals, buy contracts, or execute trades. Displayed digit-frequency anomalies are descriptive statistics, not validated predictive signals. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.
+This repository contains a public-market-data research interface. It requests public price proposals to estimate payout-aware expected value, but it does not authenticate a Deriv account, buy contracts, or execute trades. Paper prediction outcomes and digit-frequency anomalies are research metrics, not validated live profitability. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.

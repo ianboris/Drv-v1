@@ -98,7 +98,8 @@ async function handle(request) {
         to_regclass('public.ddpe_prediction_choices') IS NOT NULL AS choices,
         to_regclass('public.ddpe_trades') IS NOT NULL AS trades,
         to_regclass('public.ddpe_daily_risk') IS NOT NULL AS daily_risk,
-        to_regclass('public.ddpe_login_limits') IS NOT NULL AS login_limits`;
+        to_regclass('public.ddpe_login_limits') IS NOT NULL AS login_limits,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'account_currency') AS account_currency`;
       checks.schema_ready = Boolean(schema[0] && Object.values(schema[0]).every(Boolean));
     } catch (error) {
       return json({ ok: false, checks, error: "Database connection failed. Check DATABASE_URL and Neon network access." }, 503);
@@ -147,9 +148,9 @@ async function handle(request) {
 
   if (method === "GET" && path === "/settings") {
     const sql = getSql();
-    const rows = await sql`SELECT stake::text, daily_loss_limit::text, analysis_window FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
-    const row = rows[0] || { stake: "1", daily_loss_limit: "2", analysis_window: 100 };
-    return json({ stake: Number(row.stake), dailyLossLimit: Number(row.daily_loss_limit), windowSize: Number(row.analysis_window) });
+    const rows = await sql`SELECT stake::text, daily_loss_limit::text, analysis_window, account_currency FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
+    const row = rows[0] || { stake: "1", daily_loss_limit: "2", analysis_window: 100, account_currency: "" };
+    return json({ stake: Number(row.stake), dailyLossLimit: Number(row.daily_loss_limit), windowSize: Number(row.analysis_window), currency: row.account_currency || "" });
   }
 
   if (method === "PUT" && path === "/settings") {
@@ -159,18 +160,20 @@ async function handle(request) {
     const stake = Number(body?.stake);
     const dailyLossLimit = Number(body?.dailyLossLimit);
     const windowSize = Number(body?.windowSize);
+    const currency = typeof body?.currency === 'string' ? body.currency.trim().toUpperCase() : '';
+    if (currency && !/^[A-Z0-9]{2,20}$/.test(currency)) return json({ error: "Invalid account currency code." }, 400);
     if (!Number.isFinite(stake) || stake <= 0 || stake > 1000 ||
         !Number.isFinite(dailyLossLimit) || dailyLossLimit <= 0 || dailyLossLimit > 10000 ||
         !Number.isInteger(windowSize) || windowSize < 50 || windowSize > 5000) {
       return json({ error: "Settings are outside permitted ranges." }, 400);
     }
     const sql = getSql();
-    await sql`INSERT INTO ddpe_settings (owner_id, stake, daily_loss_limit, analysis_window)
-      VALUES (${OWNER_ID}, ${stake}, ${dailyLossLimit}, ${windowSize})
+    await sql`INSERT INTO ddpe_settings (owner_id, stake, daily_loss_limit, analysis_window, account_currency)
+      VALUES (${OWNER_ID}, ${stake}, ${dailyLossLimit}, ${windowSize}, ${currency || null})
       ON CONFLICT (owner_id) DO UPDATE SET stake = EXCLUDED.stake,
       daily_loss_limit = EXCLUDED.daily_loss_limit,
-      analysis_window = EXCLUDED.analysis_window, updated_at = NOW()`;
-    return json({ ok: true, stake, dailyLossLimit, windowSize });
+      analysis_window = EXCLUDED.analysis_window, account_currency = EXCLUDED.account_currency, updated_at = NOW()`;
+    return json({ ok: true, stake, dailyLossLimit, windowSize, currency });
   }
 
   if (method === "POST" && path === "/ticks") {
@@ -201,8 +204,11 @@ async function handle(request) {
     const sql = getSql();
     const rows = symbol
       ? await sql`SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND symbol = ${symbol} AND is_correct IS NOT NULL ORDER BY settled_at_epoch DESC LIMIT 500`
-      : await sql`SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND is_correct IS NOT NULL ORDER BY settled_at_epoch DESC LIMIT 500`;
-    return json({ choices: rows.map((row) => ({
+      : await sql`SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window FROM (SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window, ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY settled_at_epoch DESC) AS market_rank FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND is_correct IS NOT NULL) ranked WHERE market_rank <= 500 ORDER BY symbol, settled_at_epoch DESC`;
+    const aggregateRows = symbol
+      ? await sql`SELECT symbol, barrier_digit, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE is_correct = TRUE)::int AS wins FROM (SELECT symbol, barrier_digit, is_correct, ROW_NUMBER() OVER (PARTITION BY symbol, barrier_digit ORDER BY settled_at_epoch DESC) AS barrier_rank FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND symbol = ${symbol} AND is_correct IS NOT NULL) ranked WHERE barrier_rank <= 500 GROUP BY symbol, barrier_digit`
+      : await sql`SELECT symbol, barrier_digit, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE is_correct = TRUE)::int AS wins FROM (SELECT symbol, barrier_digit, is_correct, ROW_NUMBER() OVER (PARTITION BY symbol, barrier_digit ORDER BY settled_at_epoch DESC) AS barrier_rank FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND is_correct IS NOT NULL) ranked WHERE barrier_rank <= 500 GROUP BY symbol, barrier_digit`;
+    return json({ aggregates: aggregateRows.map((row) => ({ symbol: row.symbol, barrier: Number(row.barrier_digit), total: Number(row.total), wins: Number(row.wins) })), choices: rows.map((row) => ({
       id: row.choice_uid,
       symbol: row.symbol,
       barrier: Number(row.barrier_digit),
