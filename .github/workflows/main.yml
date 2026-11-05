@@ -8,11 +8,27 @@ jobs:
   neon_branch:
     runs-on: ubuntu-latest
     steps:
+      - name: Check whether Neon branching credentials are configured
+        id: neon_credentials
+        shell: bash
+        env:
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+        run: |
+          if [[ -n "$NEON_PROJECT_ID" && -n "$NEON_API_KEY" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping optional Neon branch management because NEON_PROJECT_ID or NEON_API_KEY is not configured."
+          fi
+
       - name: Checkout repository
+        if: steps.neon_credentials.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Create or manage Neon branch
-        uses: neondatabase/create-branch-action@v5 # Or your preferred Neon action setup
+        if: steps.neon_credentials.outputs.configured == 'true'
+        uses: neondatabase/create-branch-action@v5
         with:
-         project_id: ${{ secrets.NEON_PROJECT_ID }}
-         api_key: ${{ secrets.NEON_API_KEY }}
+          project_id: ${{ secrets.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
