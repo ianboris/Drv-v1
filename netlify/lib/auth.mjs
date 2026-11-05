@@ -10,7 +10,11 @@ function secret(name) {
 }
 
 function sign(value) {
-  return createHmac("sha256", secret("DDPE_SESSION_SECRET")).update(value).digest("base64url");
+  const key = secret("DDPE_SESSION_SECRET");
+  if (Buffer.byteLength(key, "utf8") < 32) {
+    throw new Error("DDPE_SESSION_SECRET must contain at least 32 bytes.");
+  }
+  return createHmac("sha256", key).update(value).digest("base64url");
 }
 
 export function json(body, status = 200, headers = {}) {
