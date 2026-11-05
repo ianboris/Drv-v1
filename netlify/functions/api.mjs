@@ -82,7 +82,7 @@ async function handle(request) {
   if (method === "GET" && path === "/health") {
     const checks = {
       database_configured: Boolean(process.env.DATABASE_URL),
-      login_configured: Boolean(process.env.DDPE_LOGIN_PASSWORD),
+      login_configured: Boolean(process.env.DDPE_LOGIN_PASSWORD && process.env.DDPE_LOGIN_PASSWORD.length >= 16),
       session_secret_configured: Boolean(process.env.DDPE_SESSION_SECRET && process.env.DDPE_SESSION_SECRET.length >= 32),
       database_connected: false,
     };
