@@ -154,15 +154,15 @@ async function handle(request) {
     if (!tickRows.length || tickRows.length > 100 || tickRows.some((tick) =>
       typeof tick?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(tick.symbol) ||
       !Number.isSafeInteger(tick.epoch) || !Number.isFinite(Number(tick.quote)) ||
-      !Number.isInteger(tick.pipSize) || tick.pipSize < 0 || tick.pipSize > 10 ||
-      !Number.isInteger(tick.lastDigit) || tick.lastDigit < 0 || tick.lastDigit > 9)) {
+      !Number.isInteger(tick.pip_size) || tick.pip_size < 0 || tick.pip_size > 10 ||
+      !Number.isInteger(tick.last_digit) || tick.last_digit < 0 || tick.last_digit > 9)) {
       return json({ error: "Invalid tick batch. Send between 1 and 100 valid ticks." }, 400);
     }
     const sql = getSql();
     await sql`INSERT INTO ddpe_ticks (owner_id, symbol, tick_epoch, quote, pip_size, last_digit)
-      SELECT ${OWNER_ID}, item.symbol, item.epoch, item.quote, item."pipSize", item."lastDigit"
+      SELECT ${OWNER_ID}, item.symbol, item.epoch, item.quote, item.pip_size, item.last_digit
       FROM jsonb_to_recordset(${JSON.stringify(tickRows)}::jsonb)
-      AS item(symbol text, epoch bigint, quote numeric, "pipSize" smallint, "lastDigit" smallint)
+      AS item(symbol text, epoch bigint, quote numeric, pip_size smallint, last_digit smallint)
       ON CONFLICT (owner_id, symbol, tick_epoch) DO NOTHING`;
     return json({ ok: true, accepted: tickRows.length });
   }
