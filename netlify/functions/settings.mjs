@@ -1,4 +1,4 @@
-import { db, json, requireOwner, requireSameOrigin } from "./_lib/auth.mjs";
+import { db, json, requireOwner, requireSameOrigin } from "../lib/auth.mjs";
 
 export const config = { path: "/api/settings" };
 const OWNER_ID = "ddpe-owner";
