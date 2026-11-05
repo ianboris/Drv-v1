@@ -23,5 +23,7 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: npm install
+      - name: Check Netlify function syntax
+        run: node --check netlify/functions/api.mjs
       - name: Run TypeScript and Vite production build
         run: npm run build
