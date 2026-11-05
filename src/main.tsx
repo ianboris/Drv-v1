@@ -7,6 +7,7 @@ type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
 type Settings = { stake: number; dailyLossLimit: number; windowSize: number; currency: string };
 type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
+type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
 type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean; analysisWindow?: number };
 type Tab = 'overview' | 'activity' | 'settings';
 const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100, currency: '' };
@@ -69,6 +70,7 @@ function App() {
   const [settings, setSettings] = useState<Settings>(readSettings);
   const [saved, setSaved] = useState(true);
   const [proposalQuotes, setProposalQuotes] = useState<Record<string, ProposalQuote>>({});
+  const [choiceAggregates, setChoiceAggregates] = useState<ChoiceAggregate[]>([]);
   const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
     try { return JSON.parse(localStorage.getItem('ddpe-choice-outcomes-v1') || '[]') as ChoiceOutcome[]; }
     catch { return []; }
@@ -396,6 +398,7 @@ function App() {
       .then((data) => {
         if (!active || !Array.isArray(data.choices)) return;
         setChoiceOutcomes([...data.choices].sort((a, b) => a.settledEpoch - b.settledEpoch));
+        setChoiceAggregates(Array.isArray(data.aggregates) ? data.aggregates : []);
         try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(data.choices)); } catch {}
       })
       .catch(() => { if (active) setBackendStatus('Prediction history unavailable'); });
@@ -425,19 +428,20 @@ function App() {
   const overallStats = useMemo(() => getStats(digits), [digits]);
   const marketName = symbols.find((item) => item.underlying_symbol === symbol)?.underlying_symbol_name || symbol;
   const scannerRows = useMemo(() => symbols.map((item) => {
-    const history = choiceOutcomes.filter((choice) => choice.symbol === item.underlying_symbol);
-    const wins = history.filter((choice) => choice.correct).length;
-    const total = history.length;
+    const history = choiceAggregates.filter((choice) => choice.symbol === item.underlying_symbol);
+    const wins = history.reduce((sum, choice) => sum + choice.wins, 0);
+    const total = history.reduce((sum, choice) => sum + choice.total, 0);
     const storedQuote = proposalQuotes[item.underlying_symbol];
     const quote = storedQuote && Date.now() - storedQuote.quotedAt <= 90000 ? storedQuote : undefined;
     const winRate = total ? wins / total : null;
-    const matched = quote ? history.filter((choice) => choice.barrier === quote.barrier) : [];
-    const matchedWins = matched.filter((choice) => choice.correct).length;
-    const matchedWinRate = matched.length ? matchedWins / matched.length : null;
-    const conservativeWinRate = matched.length ? wilsonLowerBound(matchedWins, matched.length) : null;
-    const conservativeEv = quote && matched.length >= 100 && conservativeWinRate !== null ? conservativeWinRate * quote.payout - quote.askPrice : null;
-    return { symbol: item.underlying_symbol, name: item.underlying_symbol_name || item.underlying_symbol, total, wins, winRate, matchedSample: matched.length, matchedWinRate, conservativeWinRate, quote, conservativeEv };
-  }).sort((a, b) => (b.conservativeEv ?? -Infinity) - (a.conservativeEv ?? -Infinity)), [symbols, choiceOutcomes, proposalQuotes]);
+    const matched = quote ? history.find((choice) => choice.barrier === quote.barrier) : undefined;
+    const matchedSample = matched?.total ?? 0;
+    const matchedWins = matched?.wins ?? 0;
+    const matchedWinRate = matchedSample ? matchedWins / matchedSample : null;
+    const conservativeWinRate = matchedSample ? wilsonLowerBound(matchedWins, matchedSample) : null;
+    const conservativeEv = quote && matchedSample >= 100 && conservativeWinRate !== null ? conservativeWinRate * quote.payout - quote.askPrice : null;
+    return { symbol: item.underlying_symbol, name: item.underlying_symbol_name || item.underlying_symbol, total, wins, winRate, matchedSample, matchedWinRate, conservativeWinRate, quote, conservativeEv };
+  }).sort((a, b) => (b.conservativeEv ?? -Infinity) - (a.conservativeEv ?? -Infinity)), [symbols, choiceAggregates, proposalQuotes]);
   const qualifiedMarkets = scannerRows.filter((row) => row.matchedSample >= 100 && row.quote && row.conservativeEv !== null && row.conservativeEv > 0);
   const bestMarket = qualifiedMarkets[0] || null;
   const highestWinRateMarket = scannerRows.filter((row) => row.total >= 100 && row.winRate !== null).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1))[0] || null;
