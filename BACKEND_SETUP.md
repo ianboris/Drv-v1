@@ -54,3 +54,8 @@ The owner scope is currently a single-operator constant (`primary`). Do not use 
 - No order execution is enabled. Keep it disabled until Deriv authentication, proposal/buy/settlement handling, persistent risk locking, duplicate-order protection and end-to-end tests are complete.
 - Netlify Functions are request-driven serverless functions, not an always-on WebSocket worker. This implementation is suitable for bounded API requests, not a permanent tick-stream execution daemon.
 - The health endpoint tests the database connection and reports configuration presence. It does not prove account authentication or trading readiness.
+
+
+## Data integrity migration
+
+Before deploying the runtime-fix branch, apply `db/migrations/002_tick_and_choice_identity.sql` after migration 001. It backfills stable IDs for existing tick and choice rows, permits distinct ticks and paper outcomes within the same Unix second, and creates the persistent login-throttle table. The backend health endpoint checks for this table and reports `schema_ready: false` until the migration is applied.
