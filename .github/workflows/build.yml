@@ -7,9 +7,11 @@ on:
       - repair/build-fix
       - feature/mobile-three-tab-risk-settings
       - feature/differs-accuracy-strip
+      - feature/secure-neon-backend
   push:
     branches:
       - feature/secure-neon-backend
+      - deploy/vercel-neon-adapter
 
 jobs:
   build:
@@ -23,7 +25,9 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: npm install
-      - name: Check Netlify function syntax
+      - name: Check backend function syntax
         run: node --check netlify/functions/api.mjs
+      - name: Run API smoke tests
+        run: node --test tests/api.test.mjs
       - name: Run TypeScript and Vite production build
         run: npm run build
