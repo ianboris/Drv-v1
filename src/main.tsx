@@ -373,7 +373,7 @@ function App() {
 
     {tab === 'settings' && <>
       <section className="panel settings-panel">
-        <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Initial limits are set to your requested values.</p></div><span className="saved-state">{saved ? 'Saved on this device' : 'Saving…'}</span></div>
+        <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Settings are stored in Neon through the private backend.</p></div><span className="saved-state">{saved ? 'Saved to Neon' : validSettings ? (backendStatus === 'Settings save failed' ? 'Save failed' : 'Saving…') : 'Check values'}</span></div>
         <label className="setting-field">Stake per trade (USD)
           <div className="input-wrap"><span>$</span><input type="number" min="0.35" max="1000" step="0.01" value={settings.stake} onChange={(event) => changeSetting('stake', Number(event.target.value))} /></div>
           <small>Applied as the proposed contract stake when execution is enabled. Deriv minimums and account currency will still be checked by the backend.</small>
