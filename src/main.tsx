@@ -531,11 +531,11 @@ function App() {
       <section className="panel settings-panel">
         <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Settings are stored in Neon through the private backend.</p></div><span className="saved-state">{saved ? 'Saved to Neon' : validSettings ? (backendStatus === 'Settings save failed' ? 'Save failed' : 'Saving…') : 'Check values'}</span></div>
         <label className="setting-field">Stake per trade (account currency)
-          <div className="input-wrap"><span>$</span><input type="number" min="0.35" max="1000" step="0.01" value={settings.stake} onChange={(event) => changeSetting('stake', Number(event.target.value))} /></div>
+          <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="1000" step="0.01" value={settings.stake} onChange={(event) => changeSetting('stake', Number(event.target.value))} /></div>
           <small>Applied as the proposed contract stake when execution is enabled. Deriv minimums and account currency will still be checked by the backend.</small>
         </label>
         <label className="setting-field">Maximum daily loss (account currency)
-          <div className="input-wrap"><span>$</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.dailyLossLimit} onChange={(event) => changeSetting('dailyLossLimit', Number(event.target.value))} /></div>
+          <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.dailyLossLimit} onChange={(event) => changeSetting('dailyLossLimit', Number(event.target.value))} /></div>
           <small>Hard stop: the execution service must block new purchases once the realised daily net loss reaches this amount.</small>
         </label>
         <label className="setting-field">Analysis window (ticks)
