@@ -31,8 +31,8 @@ The owner scope is currently a single-operator constant (`primary`). Do not use 
 
 ## Important limitations
 
-- The dashboard has not yet been wired to the login screen or these API routes in this branch. The endpoints must be deployed and tested before frontend migration.
-- The tick endpoint is available but the existing browser collector is not yet posting ticks to it.
+- The dashboard now uses the login screen and reads/writes settings through these API routes. The endpoints still require deployment configuration and live testing.
+- The authenticated browser collector posts live ticks to Neon in batches every five seconds while the dashboard is open. Historical ticks are used to seed the display but are not bulk-uploaded.
 - This backend does not authenticate with Deriv, request proposals, buy contracts, monitor open contracts, or enforce the daily loss stop against real trades.
 - No order execution is enabled. Keep it disabled until Deriv authentication, proposal/buy/settlement handling, persistent risk locking, duplicate-order protection and end-to-end tests are complete.
 - Netlify Functions are request-driven serverless functions, not an always-on WebSocket worker. This implementation is suitable for bounded API requests, not a permanent tick-stream execution daemon.
