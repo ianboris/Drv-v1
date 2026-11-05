@@ -272,6 +272,8 @@ function App() {
       socket.onerror = () => { if (alive) setError('Deriv WebSocket connection error.'); };
       socket.onclose = () => {
         if (!alive) return;
+        subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
+        subscriptionTimers.length = 0;
         setStatus('RECONNECTING');
         reconnectTimer.current = window.setTimeout(connect, 2500);
       };
