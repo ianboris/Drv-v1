@@ -41,3 +41,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS ddpe_choices_owner_uid_key
 CREATE INDEX IF NOT EXISTS ddpe_choices_owner_symbol_settled_id_idx
   ON ddpe_prediction_choices (owner_id, symbol, settled_at_epoch DESC, id DESC)
   WHERE is_correct IS NOT NULL;
+
+-- A one-tick paper outcome can settle in the same Unix second as its prediction.
+DO $$
+DECLARE
+  check_name TEXT;
+BEGIN
+  FOR check_name IN
+    SELECT conname
+    FROM pg_constraint
+    WHERE conrelid = 'ddpe_prediction_choices'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%settled_at_epoch > predicted_at_epoch%'
+  LOOP
+    EXECUTE format('ALTER TABLE ddpe_prediction_choices DROP CONSTRAINT %I', check_name);
+  END LOOP;
+END $$;
+
+ALTER TABLE ddpe_prediction_choices
+  ADD CONSTRAINT ddpe_choices_settlement_order_check
+  CHECK (
+    (settled_at_epoch IS NULL AND outcome_digit IS NULL AND is_correct IS NULL)
+    OR
+    (settled_at_epoch IS NOT NULL AND outcome_digit IS NOT NULL AND is_correct IS NOT NULL
+      AND settled_at_epoch >= predicted_at_epoch)
+  );
