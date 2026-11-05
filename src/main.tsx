@@ -3,10 +3,10 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 const WS = 'wss://ws.derivws.com/websockets/v3?app_id=1089';
-type Tick = { quote: number; epoch: number };
+type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
 type Settings = { stake: number; dailyLossLimit: number; windowSize: number };
-type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean };
+type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean; analysisWindow?: number };
 type Tab = 'overview' | 'activity' | 'settings';
 const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100 };
 
@@ -64,20 +64,21 @@ function App() {
     catch { return []; }
   });
   const ticksRef = useRef<Tick[]>([]);
-  const pendingChoiceRef = useRef<{ symbol: string; barrier: number; predictedEpoch: number } | null>(null);
+  const pendingChoiceRef = useRef<{ id: string; symbol: string; barrier: number; predictedEpoch: number; analysisWindow: number } | null>(null);
   const pipSizeRef = useRef<number | undefined>(undefined);
   const windowSizeRef = useRef(settings.windowSize);
   windowSizeRef.current = settings.windowSize;
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | undefined>();
-  const lastPersistedEpochRef = useRef(0);
+  const pendingTicksRef = useRef<Array<{ tick_uid: string; symbol: string; epoch: number; quote: number; pip_size: number; last_digit: number }>>([]);
   const persistInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
     ticksRef.current = [];
     setTicks([]);
-    lastPersistedEpochRef.current = 0;
+    setPipSize(undefined);
+    pipSizeRef.current = undefined;
     let alive = true;
     let socket: WebSocket | null = null;
     pendingChoiceRef.current = null;
@@ -110,46 +111,123 @@ function App() {
           if (response.msg_type === 'history') {
             const prices: number[] = response.history?.prices || [];
             const times: number[] = response.history?.times || [];
-            const history = prices.map((quote, i) => ({ quote: Number(quote), epoch: Number(times[i]) }))
-              .filter((tick) => Number.isFinite(tick.quote) && Number.isFinite(tick.epoch));
-            const merged = new Map<number, Tick>();
-            [...history, ...ticksRef.current].forEach((tick) => merged.set(tick.epoch, tick));
-            const nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
+            const history = prices.map((quote, i) => ({
+              id: `history:${symbol}:${times[i]}:${quote}:${i}`,
+              symbol,
+              quote: Number(quote),
+              epoch: Number(times[i]),
+              source: 'history' as const,
+            })).filter((tick) => Number.isFinite(tick.quote) && Number.isFinite(tick.epoch));
+            const precision = Number.isInteger(Number(response.pip_size)) ? Number(response.pip_size) : undefined;
+            if (precision !== undefined && precision >= 0 && precision <= 10) {
+              setPipSize(precision);
+              pipSizeRef.current = precision;
+            }
+            const merged = new Map<string, Tick>();
+            [...history, ...ticksRef.current].forEach((tick) => merged.set(tick.id, tick));
+            let nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
+            if (pipSizeRef.current !== undefined) {
+              nextTicks = nextTicks.map((tick) => tick.source === 'live' && tick.pipSize === undefined
+                ? { ...tick, pipSize: pipSizeRef.current, lastDigit: digitFromQuote(tick.quote, pipSizeRef.current) }
+                : tick);
+              nextTicks.filter((tick) => tick.source === 'live' && tick.pipSize !== undefined).forEach((tick) => {
+                if (!pendingTicksRef.current.some((queued) => queued.tick_uid === tick.id)) {
+                  pendingTicksRef.current.push({
+                    tick_uid: tick.id, symbol: tick.symbol, epoch: tick.epoch, quote: tick.quote,
+                    pip_size: tick.pipSize!, last_digit: tick.lastDigit!,
+                  });
+                }
+              });
+            }
             ticksRef.current = nextTicks;
             setTicks(nextTicks);
-            if (history.length) lastPersistedEpochRef.current = Math.max(lastPersistedEpochRef.current, ...history.map((tick) => tick.epoch));
-            if (response.pip_size !== undefined) { setPipSize(Number(response.pip_size)); pipSizeRef.current = Number(response.pip_size); }
           }
           if (response.msg_type === 'tick' && response.tick) {
-            const tick = { quote: Number(response.tick.quote), epoch: Number(response.tick.epoch) };
-            const tickPipSize = response.tick.pip_size !== undefined ? Number(response.tick.pip_size) : pipSizeRef.current;
-            if (response.tick.pip_size !== undefined) { setPipSize(tickPipSize); pipSizeRef.current = tickPipSize; }
-            if (Number.isFinite(tick.quote) && Number.isFinite(tick.epoch)) {
+            const quote = Number(response.tick.quote);
+            const epoch = Number(response.tick.epoch);
+            const tickPipSize = response.tick.pip_size !== undefined
+              ? Number(response.tick.pip_size)
+              : pipSizeRef.current;
+            if (response.tick.pip_size !== undefined && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10) {
+              setPipSize(tickPipSize);
+              pipSizeRef.current = tickPipSize;
+            }
+            if (Number.isFinite(quote) && Number.isSafeInteger(epoch)) {
+              const derivTickId = response.tick.id !== undefined && response.tick.id !== null
+                ? String(response.tick.id)
+                : crypto.randomUUID();
+              const tick: Tick = {
+                id: `live:${symbol}:${derivTickId}`,
+                symbol,
+                quote,
+                epoch,
+                source: 'live',
+                ...(Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10
+                  ? { pipSize: tickPipSize, lastDigit: digitFromQuote(quote, tickPipSize) }
+                  : {}),
+              };
               const currentTicks = ticksRef.current;
-              if (!currentTicks.some((item) => item.epoch === tick.epoch)) {
-                const incomingDigit = digitFromQuote(tick.quote, tickPipSize);
-                const pending = pendingChoiceRef.current;
-                if (pending && pending.symbol === symbol && tick.epoch > pending.predictedEpoch) {
-                  const outcome: ChoiceOutcome = {
-                    id: `${pending.symbol}-${pending.predictedEpoch}-${tick.epoch}`,
-                    symbol: pending.symbol,
-                    barrier: pending.barrier,
-                    predictedEpoch: pending.predictedEpoch,
-                    settledEpoch: tick.epoch,
-                    outcomeDigit: incomingDigit,
-                    correct: incomingDigit !== pending.barrier
-                  };
-                  setChoiceOutcomes((previous) => {
-                    const updated = [...previous, outcome].slice(-5000);
-                    try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(updated)); } catch {}
-                    return updated;
+              if (!currentTicks.some((item) => item.id === tick.id)) {
+                if (tick.pipSize !== undefined && tick.lastDigit !== undefined) {
+                  pendingTicksRef.current.push({
+                    tick_uid: tick.id,
+                    symbol,
+                    epoch,
+                    quote,
+                    pip_size: tick.pipSize,
+                    last_digit: tick.lastDigit,
                   });
-                  pendingChoiceRef.current = null;
-                }
-                const priorDigits = currentTicks.slice(-windowSizeRef.current).map((item) => digitFromQuote(item.quote, tickPipSize));
-                if (priorDigits.length >= windowSizeRef.current) {
-                  const priorStats = getStats(priorDigits);
-                  if (priorStats.barrier >= 0) pendingChoiceRef.current = { symbol, barrier: priorStats.barrier, predictedEpoch: tick.epoch };
+                  const incomingDigit = tick.lastDigit;
+                  const pending = pendingChoiceRef.current;
+                  if (pending && pending.symbol === symbol) {
+                    const outcome: ChoiceOutcome = {
+                      id: pending.id,
+                      symbol: pending.symbol,
+                      barrier: pending.barrier,
+                      predictedEpoch: pending.predictedEpoch,
+                      settledEpoch: epoch,
+                      outcomeDigit: incomingDigit,
+                      correct: incomingDigit !== pending.barrier,
+                      analysisWindow: pending.analysisWindow,
+                    };
+                    setChoiceOutcomes((previous) => {
+                      const updated = [...previous.filter((item) => item.id !== outcome.id), outcome].slice(-5000);
+                      try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(updated)); } catch {}
+                      return updated;
+                    });
+                    fetch('/api/choices', {
+                      method: 'POST',
+                      credentials: 'same-origin',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ choices: [{
+                        choice_uid: outcome.id,
+                        symbol: outcome.symbol,
+                        barrier_digit: outcome.barrier,
+                        predicted_at_epoch: outcome.predictedEpoch,
+                        settled_at_epoch: outcome.settledEpoch,
+                        outcome_digit: outcome.outcomeDigit,
+                        is_correct: outcome.correct,
+                        analysis_window: outcome.analysisWindow ?? windowSizeRef.current,
+                      }] }),
+                    }).then((response) => {
+                      if (!response.ok) throw new Error('Paper choice persistence failed.');
+                    }).catch(() => setBackendStatus('Prediction persistence failed'));
+                    pendingChoiceRef.current = null;
+                  }
+                  const priorDigits = currentTicks.slice(-windowSizeRef.current).map((item) =>
+                    item.lastDigit ?? digitFromQuote(item.quote, tickPipSize));
+                  if (priorDigits.length >= windowSizeRef.current) {
+                    const priorStats = getStats(priorDigits);
+                    if (priorStats.barrier >= 0) {
+                      pendingChoiceRef.current = {
+                        id: crypto.randomUUID(),
+                        symbol,
+                        barrier: priorStats.barrier,
+                        predictedEpoch: epoch,
+                        analysisWindow: windowSizeRef.current,
+                      };
+                    }
+                  }
                 }
                 const nextTicks = [...currentTicks, tick].sort((a, b) => a.epoch - b.epoch).slice(-5000);
                 ticksRef.current = nextTicks;
@@ -214,21 +292,45 @@ function App() {
   useEffect(() => {
     if (!authenticated) return;
     const timer = window.setInterval(async () => {
-      if (persistInFlightRef.current) return;
-      const pending = ticksRef.current.filter((tick) => tick.epoch > lastPersistedEpochRef.current).slice(0, 100);
-      if (!pending.length) return;
+      if (persistInFlightRef.current || !pendingTicksRef.current.length) return;
       persistInFlightRef.current = true;
-      const payload = pending.map((tick) => ({ symbol, epoch: tick.epoch, quote: tick.quote, pip_size: pipSize ?? 0, last_digit: digitFromQuote(tick.quote, pipSize) }));
+      const batch = pendingTicksRef.current.slice(0, 100);
+      const ids = new Set(batch.map((tick) => tick.tick_uid));
       try {
-        const response = await fetch('/api/ticks', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticks: payload }) });
+        const response = await fetch('/api/ticks', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ticks: batch }),
+        });
         if (!response.ok) throw new Error('Tick persistence rejected.');
-        lastPersistedEpochRef.current = pending[pending.length - 1].epoch;
+        pendingTicksRef.current = pendingTicksRef.current.filter((tick) => !ids.has(tick.tick_uid));
         setBackendStatus('Database connected · ticks saving');
-      } catch { setBackendStatus('Tick persistence failed'); }
-      finally { persistInFlightRef.current = false; }
+      } catch {
+        setBackendStatus('Tick persistence failed · retrying');
+      } finally {
+        persistInFlightRef.current = false;
+      }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [authenticated, symbol, pipSize]);
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let active = true;
+    fetch(`/api/choices?symbol=${encodeURIComponent(symbol)}`, { credentials: 'same-origin', cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Could not load paper choices from Neon.');
+        return response.json();
+      })
+      .then((data) => {
+        if (!active || !Array.isArray(data.choices)) return;
+        setChoiceOutcomes(data.choices);
+        try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(data.choices)); } catch {}
+      })
+      .catch(() => { if (active) setBackendStatus('Prediction history unavailable'); });
+    return () => { active = false; };
+  }, [authenticated, symbol]);
 
   useEffect(() => {
     if (!authenticated || !settingsLoaded) return;
@@ -247,7 +349,7 @@ function App() {
     return () => { active = false; window.clearTimeout(timer); };
   }, [settings, authenticated, settingsLoaded]);
 
-  const digits = useMemo(() => ticks.map((tick) => digitFromQuote(tick.quote, pipSize)), [ticks, pipSize]);
+  const digits = useMemo(() => ticks.map((tick) => tick.lastDigit ?? digitFromQuote(tick.quote, pipSize)), [ticks, pipSize]);
   const rollingDigits = digits.slice(-settings.windowSize);
   const stats = useMemo(() => getStats(rollingDigits), [rollingDigits]);
   const overallStats = useMemo(() => getStats(digits), [digits]);
@@ -317,7 +419,7 @@ function App() {
         <div className="panel decision-panel">
           <div className="section-heading">DIFFERS RESEARCH STATUS</div>
           <div className="decision">COLLECTING DATA</div>
-          <p className="muted">No live order is being sent. The current repository has no authenticated execution service or validated profitable signal model.</p>
+          <p className="muted">No live order is being sent. The current repository has no authenticated execution service or validated signal model.</p>
           <div className="divider" />
           <div className="candidate-row"><span>Least frequent digit candidate</span><strong>{stats.barrier >= 0 ? stats.barrier : '—'}</strong></div>
           <div className="candidate-row"><span>Observed Differs rate vs candidate</span><strong>{stats.sample ? differsEstimate.toFixed(2) + '%' : '—'}</strong></div>
@@ -334,7 +436,7 @@ function App() {
 
       <section className="panel">
         <div className="panel-title"><div><div className="section-heading">LIVE DIGIT STREAM</div><p className="muted">Latest 60 final quote digits</p></div><span className="live-dot">LIVE FEED</span></div>
-        <div className="digits">{digits.slice(-60).map((digit, index, array) => <span key={ticks.slice(-60)[index]?.epoch ?? index} className={index === array.length - 1 ? 'last' : ''}>{digit}</span>)}</div>
+        <div className="digits">{digits.slice(-60).map((digit, index, array) => <span key={ticks.slice(-60)[index]?.id ?? index} className={index === array.length - 1 ? 'last' : ''}>{digit}</span>)}</div>
       </section>
 
       <section className="stats-grid">
@@ -357,7 +459,7 @@ function App() {
         <strong>{settledAccuracy === null ? '—' : settledAccuracy.toFixed(1) + '%'}</strong>
         <span className="accuracy-sample">{symbolOutcomes.length} settled {symbolOutcomes.length === 1 ? 'choice' : 'choices'}</span>
       </section>
-      <p className="accuracy-note">Each choice selects the least-frequent digit using the preceding analysis window. It is scored against the next live tick only. This is a paper prediction statistic, not actual contract win rate, net profitability, or a guarantee. It resets only if this browser's local data is cleared.</p>
+      <p className="accuracy-note">Each choice selects the least-frequent digit using the preceding analysis window. It is scored against the next live tick only. This is a paper prediction statistic, not actual contract win rate, net profitability, or a guarantee. Settled paper choices are saved in Neon; the browser cache is only a convenience.</p>
       <section className="panel">
         <div className="section-heading">ROLLING DIGIT DISTRIBUTION</div>
         <p className="muted">Observed frequencies over the latest {stats.sample} ticks. Frequency alone does not establish a predictive edge.</p>
@@ -366,7 +468,7 @@ function App() {
       <section className="panel">
         <div className="section-heading">RECENT TICKS</div>
         <div className="table-wrap"><table><thead><tr><th>Time (UTC)</th><th>Quote</th><th>Last digit</th></tr></thead><tbody>
-          {ticks.slice(-25).reverse().map((tick) => <tr key={tick.epoch}><td>{new Date(tick.epoch * 1000).toLocaleTimeString()}</td><td>{tick.quote}</td><td>{digitFromQuote(tick.quote, pipSize)}</td></tr>)}
+          {ticks.slice(-25).reverse().map((tick) => <tr key={tick.id}><td>{new Date(tick.epoch * 1000).toLocaleTimeString()}</td><td>{tick.quote}</td><td>{digitFromQuote(tick.quote, pipSize)}</td></tr>)}
           {!ticks.length && <tr><td colSpan={3} className="empty">Waiting for tick data…</td></tr>}
         </tbody></table></div>
       </section>
