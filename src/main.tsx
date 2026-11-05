@@ -85,7 +85,7 @@ function App() {
   const reconnectTimer = useRef<number | undefined>();
   const pendingTicksRef = useRef<Array<{ tick_uid: string; symbol: string; epoch: number; quote: number; pip_size: number; last_digit: number }>>([]);
   const persistInFlightRef = useRef(false);
-  const proposalRequestsRef = useRef(new Map<number, { symbol: string; barrier: number }>());
+  const proposalRequestsRef = useRef(new Map<number, { symbol: string; barrier: number; currency: string; stake: number }>());
   const proposalReqIdRef = useRef(3000);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -127,7 +127,7 @@ function App() {
           if (response.msg_type === 'proposal' && response.proposal) {
             const reqId = Number(response.req_id);
             const request = proposalRequestsRef.current.get(reqId);
-            if (request) {
+            if (request && request.currency === settingsRef.current.currency && request.stake === settingsRef.current.stake) {
               const askPrice = Number(response.proposal.ask_price);
               const payout = Number(response.proposal.payout);
               if (Number.isFinite(askPrice) && askPrice > 0 && Number.isFinite(payout) && payout > askPrice) {
@@ -461,7 +461,7 @@ function App() {
     const barrier = getStats(digits).barrier;
     if (barrier < 0) return;
     const reqId = proposalReqIdRef.current++;
-    proposalRequestsRef.current.set(reqId, { symbol: marketSymbol, barrier });
+    proposalRequestsRef.current.set(reqId, { symbol: marketSymbol, barrier, currency: currentSettings.currency, stake: currentSettings.stake });
     socket.send(JSON.stringify({ proposal: 1, amount: currentSettings.stake, basis: 'stake', contract_type: 'DIGITDIFF', currency: currentSettings.currency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(barrier), req_id: reqId }));
   };
 
@@ -562,7 +562,7 @@ function App() {
         {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed win rate (100+ outcomes)</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% observed win rate from {highestWinRateMarket.total} settled paper outcomes</small></div>}
         {bestMarket ? <div className="scanner-leader"><span>Best profitability-qualified candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed win rate · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} conservative EV per contract</small></div> : <p className="muted">No market has met every profitability gate yet: at least 100 settled paper outcomes for the exact quoted barrier, a fresh proposal quote in your account currency, and positive conservative expected value. The scanner will not call an under-sampled market profitable.</p>}
         <div className="table-wrap"><table><thead><tr><th>Market</th><th>Settled / matched</th><th>Strategy win rate</th><th>Quoted-barrier win rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Conservative EV</th><th>Gate</th></tr></thead><tbody>
-          {scannerRows.map((row) => <tr key={row.symbol}><td><button className="text-button" onClick={() => selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.total} / {row.matchedSample}</td><td>{row.winRate === null ? '—' : (row.winRate * 100).toFixed(2) + '%'}</td><td>{row.matchedWinRate === null ? '—' : (row.matchedWinRate * 100).toFixed(2) + '%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate * 100).toFixed(2) + '%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv >= 0 ? '+' : ''}${row.conservativeEv.toFixed(4)} ${settings.currency}`}</td><td>{row.matchedSample < 100 ? 'Need 100 barrier matches' : !row.quote ? 'Need live quote' : row.conservativeEv! > 0 ? 'Positive estimate' : 'Not profitable'}</td></tr>)}
+          {scannerRows.map((row) => <tr key={row.symbol}><td><button className="text-button" onClick={() => selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.total} / {row.matchedSample}</td><td>{row.winRate === null ? '—' : (row.winRate * 100).toFixed(2) + '%'}</td><td>{row.matchedWinRate === null ? '—' : (row.matchedWinRate * 100).toFixed(2) + '%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate * 100).toFixed(2) + '%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv >= 0 ? '+' : ''}${row.conservativeEv.toFixed(4)} ${settings.currency}`}</td><td>{!row.quote ? 'Need live quote' : row.matchedSample < 100 ? 'Need 100 barrier matches' : row.conservativeEv! > 0 ? 'Positive estimate' : 'Not profitable'}</td></tr>)}
           {!scannerRows.length && <tr><td colSpan={8} className="empty">Waiting for eligible Differs markets…</td></tr>}
         </tbody></table></div>
         <small className="muted">Conservative EV = Wilson 95% lower-bound win probability for the currently quoted barrier × gross payout − ask price. Strategy-wide win rate is shown separately. Outcomes are paper predictions, not actual contract settlements; serial dependence and market-selection bias are not corrected. Positive estimates are not proof of future profitability.</small>
