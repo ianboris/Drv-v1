@@ -197,7 +197,7 @@ async function handle(request) {
       typeof choice?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(choice.symbol) ||
       !Number.isInteger(choice.barrier_digit) || choice.barrier_digit < 0 || choice.barrier_digit > 9 ||
       !Number.isSafeInteger(choice.predicted_at_epoch) || !Number.isSafeInteger(choice.settled_at_epoch) ||
-      choice.settled_at_epoch <= choice.predicted_at_epoch ||
+      choice.settled_at_epoch < choice.predicted_at_epoch ||
       !Number.isInteger(choice.outcome_digit) || choice.outcome_digit < 0 || choice.outcome_digit > 9 ||
       typeof choice.is_correct !== "boolean" ||
       !Number.isInteger(choice.analysis_window) || choice.analysis_window < 50 || choice.analysis_window > 5000)) {
