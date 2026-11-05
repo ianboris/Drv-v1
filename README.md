@@ -1,19 +1,40 @@
 # Deriv Digit AI V1
 
-Clean Vite + React + TypeScript mobile-first research console.
+Mobile-first Vite + React + TypeScript research console.
 
 ## Structure
-- index.html
-- package.json
-- tsconfig.json
-- vite.config.ts
-- public/manifest.webmanifest
-- src/main.tsx
-- src/style.css
 
-## Build
+- `index.html`
+- `package.json`
+- `tsconfig.json`
+- `vite.config.ts`
+- `manifest.webmanifest`
+- `src/main.tsx`
+- `src/style.css`
+
+## Local development
+
+```sh
 npm install
-npm run build
+npm run dev
+```
 
-## Deploy
-Import the repository into Vercel. Framework: Vite. Build command: npm run build. Output directory: dist.
+## Production build
+
+```sh
+npm run build
+npm run preview
+```
+
+The production build is written to `dist/`.
+
+## Deployment
+
+The app is a static Vite site. Configure the hosting provider with:
+
+- Build command: `npm run build`
+- Publish directory: `dist`
+
+## Scope and limitations
+
+This repository currently contains a public-market-data research interface only. It does not authenticate a Deriv account, submit proposals, buy contracts, or execute trades. Displayed digit-frequency anomalies are descriptive statistics, not validated predictive signals. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.
