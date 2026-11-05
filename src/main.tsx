@@ -64,8 +64,11 @@ function App() {
     catch { return []; }
   });
   const ticksRef = useRef<Tick[]>([]);
-  const pendingChoiceRef = useRef<{ id: string; symbol: string; barrier: number; predictedEpoch: number; analysisWindow: number } | null>(null);
-  const pipSizeRef = useRef<number | undefined>(undefined);
+  const pendingChoicesRef = useRef<Map<string, { id: string; symbol: string; barrier: number; predictedEpoch: number; analysisWindow: number }>>(new Map());
+  const ticksBySymbolRef = useRef<Map<string, Tick[]>>(new Map());
+  const pipSizesBySymbolRef = useRef<Map<string, number>>(new Map());
+  const selectedSymbolRef = useRef(symbol);
+  selectedSymbolRef.current = symbol;
   const windowSizeRef = useRef(settings.windowSize);
   windowSizeRef.current = settings.windowSize;
   const ws = useRef<WebSocket | null>(null);
@@ -75,13 +78,14 @@ function App() {
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
+    ticksBySymbolRef.current.clear();
+    pipSizesBySymbolRef.current.clear();
+    pendingChoicesRef.current.clear();
     ticksRef.current = [];
     setTicks([]);
     setPipSize(undefined);
-    pipSizeRef.current = undefined;
     let alive = true;
     let socket: WebSocket | null = null;
-    pendingChoiceRef.current = null;
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
@@ -91,9 +95,9 @@ function App() {
         if (!alive || !socket) return;
         setStatus('CONNECTED');
         setError('');
-        socket.send(JSON.stringify({ active_symbols: 'brief', product_type: 'basic', req_id: 1 }));
-        socket.send(JSON.stringify({ ticks_history: symbol, count: 1000, end: 'latest', style: 'ticks', req_id: 2 }));
-        socket.send(JSON.stringify({ ticks: symbol, subscribe: 1, req_id: 3 }));
+        // Ask Deriv only for underlyings that list DIGITDIFF as an available contract.
+        // The current API no longer accepts product_type on active_symbols.
+        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF'], req_id: 1 }));
       };
       socket.onmessage = (event) => {
         if (!alive) return;
@@ -103,32 +107,47 @@ function App() {
           if (response.msg_type === 'active_symbols') {
             const list: ActiveSymbol[] = response.active_symbols || [];
             setSymbols(list);
-            if (list.length && !list.some((item) => item.underlying_symbol === symbol)) {
+            list.forEach((item, index) => {
+              const marketSymbol = item.underlying_symbol;
+              if (!marketSymbol) return;
+              if (Number.isInteger(item.pip_size) && Number(item.pip_size) >= 0 && Number(item.pip_size) <= 10) {
+                pipSizesBySymbolRef.current.set(marketSymbol, Number(item.pip_size));
+              }
+              // Seed every DIGITDIFF-capable market and subscribe to each live stream.
+              socket?.send(JSON.stringify({ ticks_history: marketSymbol, count: 1000, end: 'latest', style: 'ticks', req_id: 1000 + index }));
+              socket?.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 + index }));
+            });
+            const selected = selectedSymbolRef.current;
+            if (list.length && !list.some((item) => item.underlying_symbol === selected)) {
               const first = list[0].underlying_symbol;
               if (first) selectSymbol(first);
+            } else {
+              setPipSize(pipSizesBySymbolRef.current.get(selected));
             }
           }
           if (response.msg_type === 'history') {
+            const historySymbol = response.echo_req?.ticks_history || response.passthrough?.symbol;
+            if (typeof historySymbol !== 'string') return;
             const prices: number[] = response.history?.prices || [];
             const times: number[] = response.history?.times || [];
             const history = prices.map((quote, i) => ({
-              id: `history:${symbol}:${times[i]}:${quote}:${i}`,
-              symbol,
+              id: `history:${historySymbol}:${times[i]}:${quote}:${i}`,
+              symbol: historySymbol,
               quote: Number(quote),
               epoch: Number(times[i]),
               source: 'history' as const,
-            })).filter((tick) => Number.isFinite(tick.quote) && Number.isFinite(tick.epoch));
-            const precision = Number.isInteger(Number(response.pip_size)) ? Number(response.pip_size) : undefined;
-            if (precision !== undefined && precision >= 0 && precision <= 10) {
-              setPipSize(precision);
-              pipSizeRef.current = precision;
+            })).filter((tick) => Number.isFinite(tick.quote) && Number.isSafeInteger(tick.epoch));
+            const responsePrecision = Number(response.pip_size);
+            if (Number.isInteger(responsePrecision) && responsePrecision >= 0 && responsePrecision <= 10) {
+              pipSizesBySymbolRef.current.set(historySymbol, responsePrecision);
             }
+            const precision = pipSizesBySymbolRef.current.get(historySymbol);
             const merged = new Map<string, Tick>();
-            [...history, ...ticksRef.current].forEach((tick) => merged.set(tick.id, tick));
+            [...history, ...(ticksBySymbolRef.current.get(historySymbol) || [])].forEach((tick) => merged.set(tick.id, tick));
             let nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
-            if (pipSizeRef.current !== undefined) {
+            if (precision !== undefined) {
               nextTicks = nextTicks.map((tick) => tick.source === 'live' && tick.pipSize === undefined
-                ? { ...tick, pipSize: pipSizeRef.current, lastDigit: digitFromQuote(tick.quote, pipSizeRef.current) }
+                ? { ...tick, pipSize: precision, lastDigit: digitFromQuote(tick.quote, precision) }
                 : tick);
               nextTicks.filter((tick) => tick.source === 'live' && tick.pipSize !== undefined).forEach((tick) => {
                 if (!pendingTicksRef.current.some((queued) => queued.tick_uid === tick.id)) {
@@ -139,55 +158,55 @@ function App() {
                 }
               });
             }
-            ticksRef.current = nextTicks;
-            setTicks(nextTicks);
+            ticksBySymbolRef.current.set(historySymbol, nextTicks);
+            if (historySymbol === selectedSymbolRef.current) {
+              ticksRef.current = nextTicks;
+              setTicks(nextTicks);
+              setPipSize(precision);
+            }
           }
           if (response.msg_type === 'tick' && response.tick) {
+            const marketSymbol = String(response.tick.symbol || response.echo_req?.ticks || '');
+            if (!marketSymbol) return;
             const quote = Number(response.tick.quote);
             const epoch = Number(response.tick.epoch);
-            const tickPipSize = response.tick.pip_size !== undefined
-              ? Number(response.tick.pip_size)
-              : pipSizeRef.current;
-            if (response.tick.pip_size !== undefined && typeof tickPipSize === 'number' && typeof tickPipSize === 'number' && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10) {
-              setPipSize(tickPipSize);
-              pipSizeRef.current = tickPipSize;
+            const responsePrecision = response.tick.pip_size !== undefined ? Number(response.tick.pip_size) : undefined;
+            if (responsePrecision !== undefined && Number.isInteger(responsePrecision) && responsePrecision >= 0 && responsePrecision <= 10) {
+              pipSizesBySymbolRef.current.set(marketSymbol, responsePrecision);
+              if (marketSymbol === selectedSymbolRef.current) setPipSize(responsePrecision);
             }
+            const tickPipSize = pipSizesBySymbolRef.current.get(marketSymbol);
             if (Number.isFinite(quote) && Number.isSafeInteger(epoch)) {
               const derivTickId = response.tick.id !== undefined && response.tick.id !== null
                 ? String(response.tick.id)
                 : crypto.randomUUID();
               const tick: Tick = {
-                id: `live:${symbol}:${derivTickId}`,
-                symbol,
+                id: `live:${marketSymbol}:${derivTickId}`,
+                symbol: marketSymbol,
                 quote,
                 epoch,
                 source: 'live',
-                ...(typeof tickPipSize === 'number' && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10
+                ...(tickPipSize !== undefined
                   ? { pipSize: tickPipSize, lastDigit: digitFromQuote(quote, tickPipSize) }
                   : {}),
               };
-              const currentTicks = ticksRef.current;
+              const currentTicks = ticksBySymbolRef.current.get(marketSymbol) || [];
               if (!currentTicks.some((item) => item.id === tick.id)) {
                 if (tick.pipSize !== undefined && tick.lastDigit !== undefined) {
                   pendingTicksRef.current.push({
-                    tick_uid: tick.id,
-                    symbol,
-                    epoch,
-                    quote,
-                    pip_size: tick.pipSize,
-                    last_digit: tick.lastDigit,
+                    tick_uid: tick.id, symbol: marketSymbol, epoch, quote,
+                    pip_size: tick.pipSize, last_digit: tick.lastDigit,
                   });
-                  const incomingDigit = tick.lastDigit;
-                  const pending = pendingChoiceRef.current;
-                  if (pending && pending.symbol === symbol) {
+                  const pending = pendingChoicesRef.current.get(marketSymbol);
+                  if (pending) {
                     const outcome: ChoiceOutcome = {
                       id: pending.id,
                       symbol: pending.symbol,
                       barrier: pending.barrier,
                       predictedEpoch: pending.predictedEpoch,
                       settledEpoch: epoch,
-                      outcomeDigit: incomingDigit,
-                      correct: incomingDigit !== pending.barrier,
+                      outcomeDigit: tick.lastDigit,
+                      correct: tick.lastDigit !== pending.barrier,
                       analysisWindow: pending.analysisWindow,
                     };
                     setChoiceOutcomes((previous) => {
@@ -212,26 +231,29 @@ function App() {
                     }).then((response) => {
                       if (!response.ok) throw new Error('Paper choice persistence failed.');
                     }).catch(() => setBackendStatus('Prediction persistence failed'));
-                    pendingChoiceRef.current = null;
+                    pendingChoicesRef.current.delete(marketSymbol);
                   }
                   const priorDigits = currentTicks.slice(-windowSizeRef.current).map((item) =>
                     item.lastDigit ?? digitFromQuote(item.quote, tickPipSize));
                   if (priorDigits.length >= windowSizeRef.current) {
                     const priorStats = getStats(priorDigits);
                     if (priorStats.barrier >= 0) {
-                      pendingChoiceRef.current = {
+                      pendingChoicesRef.current.set(marketSymbol, {
                         id: crypto.randomUUID(),
-                        symbol,
+                        symbol: marketSymbol,
                         barrier: priorStats.barrier,
                         predictedEpoch: epoch,
                         analysisWindow: windowSizeRef.current,
-                      };
+                      });
                     }
                   }
                 }
                 const nextTicks = [...currentTicks, tick].sort((a, b) => a.epoch - b.epoch).slice(-5000);
-                ticksRef.current = nextTicks;
-                setTicks(nextTicks);
+                ticksBySymbolRef.current.set(marketSymbol, nextTicks);
+                if (marketSymbol === selectedSymbolRef.current) {
+                  ticksRef.current = nextTicks;
+                  setTicks(nextTicks);
+                }
               }
             }
           }
@@ -256,7 +278,7 @@ function App() {
       }
       if (ws.current === socket) ws.current = null;
     };
-  }, [symbol, authenticated]);
+  }, [authenticated]);
 
   useEffect(() => {
     let active = true;
@@ -367,13 +389,13 @@ function App() {
   const validSettings = settings.stake > 0 && settings.dailyLossLimit > 0 && settings.windowSize >= 50;
 
   const selectSymbol = (nextSymbol: string) => {
-    if (nextSymbol === symbol) return;
+    if (nextSymbol === selectedSymbolRef.current) return;
+    selectedSymbolRef.current = nextSymbol;
     setSymbol(nextSymbol);
-    setTicks([]);
-    ticksRef.current = [];
-    setPipSize(undefined);
-    pipSizeRef.current = undefined;
-    pendingChoiceRef.current = null;
+    const nextTicks = ticksBySymbolRef.current.get(nextSymbol) || [];
+    ticksRef.current = nextTicks;
+    setTicks(nextTicks);
+    setPipSize(pipSizesBySymbolRef.current.get(nextSymbol));
   };
 
   const submitLogin = async (event: React.FormEvent) => {
