@@ -150,18 +150,21 @@ async function handle(request) {
     assertSameOrigin(request);
     let body;
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
-    const { symbol, epoch, quote, pipSize, lastDigit } = body || {};
-    if (typeof symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(symbol) ||
-        !Number.isSafeInteger(epoch) || !Number.isFinite(Number(quote)) ||
-        !Number.isInteger(pipSize) || pipSize < 0 || pipSize > 10 ||
-        !Number.isInteger(lastDigit) || lastDigit < 0 || lastDigit > 9) {
-      return json({ error: "Invalid tick payload." }, 400);
+    const tickRows = Array.isArray(body?.ticks) ? body.ticks : [body];
+    if (!tickRows.length || tickRows.length > 100 || tickRows.some((tick) =>
+      typeof tick?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(tick.symbol) ||
+      !Number.isSafeInteger(tick.epoch) || !Number.isFinite(Number(tick.quote)) ||
+      !Number.isInteger(tick.pipSize) || tick.pipSize < 0 || tick.pipSize > 10 ||
+      !Number.isInteger(tick.lastDigit) || tick.lastDigit < 0 || tick.lastDigit > 9)) {
+      return json({ error: "Invalid tick batch. Send between 1 and 100 valid ticks." }, 400);
     }
     const sql = getSql();
     await sql`INSERT INTO ddpe_ticks (owner_id, symbol, tick_epoch, quote, pip_size, last_digit)
-      VALUES (${OWNER_ID}, ${symbol}, ${epoch}, ${String(quote)}, ${pipSize}, ${lastDigit})
+      SELECT ${OWNER_ID}, item.symbol, item.epoch, item.quote, item."pipSize", item."lastDigit"
+      FROM jsonb_to_recordset(${JSON.stringify(tickRows)}::jsonb)
+      AS item(symbol text, epoch bigint, quote numeric, "pipSize" smallint, "lastDigit" smallint)
       ON CONFLICT (owner_id, symbol, tick_epoch) DO NOTHING`;
-    return json({ ok: true });
+    return json({ ok: true, accepted: tickRows.length });
   }
 
   return json({ error: "Not found." }, 404);
