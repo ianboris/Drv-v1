@@ -86,6 +86,7 @@ function App() {
     setPipSize(undefined);
     let alive = true;
     let socket: WebSocket | null = null;
+    const subscriptionTimers: number[] = [];
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
@@ -114,8 +115,17 @@ function App() {
                 pipSizesBySymbolRef.current.set(marketSymbol, Number(item.pip_size));
               }
               // Seed every DIGITDIFF-capable market and subscribe to each live stream.
-              socket?.send(JSON.stringify({ ticks_history: marketSymbol, count: 1000, end: 'latest', style: 'ticks', req_id: 1000 + index }));
-              socket?.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 + index }));
+              const delay = index * 75;
+              subscriptionTimers.push(window.setTimeout(() => {
+                if (alive && socket?.readyState === WebSocket.OPEN) {
+                  socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 1000, end: 'latest', style: 'ticks', req_id: 1000 + index }));
+                }
+              }, delay));
+              subscriptionTimers.push(window.setTimeout(() => {
+                if (alive && socket?.readyState === WebSocket.OPEN) {
+                  socket.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 + index }));
+                }
+              }, delay + 25));
             });
             const selected = selectedSymbolRef.current;
             if (list.length && !list.some((item) => item.underlying_symbol === selected)) {
@@ -270,6 +280,7 @@ function App() {
     return () => {
       alive = false;
       if (reconnectTimer.current) window.clearTimeout(reconnectTimer.current);
+      subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
       if (socket) {
         if (socket.readyState === WebSocket.OPEN) {
           try { socket.send(JSON.stringify({ forget_all: 'ticks' })); } catch {}
@@ -446,7 +457,7 @@ function App() {
             {symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}
           </select>
         </label>
-        <div className="quote"><span>{marketName}</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong><small>{ticks.length.toLocaleString()} ticks collected in this session</small></div>
+        <div className="quote"><span>{marketName}</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong><small>{ticks.length.toLocaleString()} ticks in this market · {symbols.length} Differs-capable markets monitored</small></div>
       </section>
 
       <section className="overview-grid">
