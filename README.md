@@ -45,4 +45,4 @@ The scanner monitors every returned `DIGITDIFF`-eligible market, records one-tic
 
 ## Scope and limitations
 
-This repository currently contains a public-market-data research interface only. It does not authenticate a Deriv account, submit proposals, buy contracts, or execute trades. Displayed digit-frequency anomalies are descriptive statistics, not validated predictive signals. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.
+This repository contains a public-market-data research interface. It requests public price proposals to estimate payout-aware expected value, but it does not authenticate a Deriv account, buy contracts, or execute trades. Paper prediction outcomes and digit-frequency anomalies are research metrics, not validated live profitability. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.
