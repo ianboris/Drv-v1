@@ -64,3 +64,8 @@ Before deploying the runtime-fix branch, apply `db/migrations/002_tick_and_choic
 ## Market-data collection scope
 
 The browser collector requests the Deriv active-symbol list filtered to the DIGITDIFF contract type, then staggers historical seeding and live tick subscriptions for each returned underlying. The selected market controls the visible dashboard; all returned DIGITDIFF-capable markets are collected and their ticks/paper choices are persisted separately. If Deriv changes the active-symbol filter or returns no eligible symbols, check the browser's Deriv API error/status before assuming the feed is active.
+
+
+## Account currency and execution boundary
+
+The saved stake and daily-loss values are numeric amounts only. The application does not yet verify the Deriv account currency or account minimum stake. Do not interpret the displayed values as USD, and do not enable live purchases until the authenticated Deriv account currency and contract limits have been verified. Live execution remains disabled.
