@@ -41,7 +41,7 @@ Apply these files in the Neon SQL Editor in order: `001_ddpe_core.sql`, `002_tic
 
 ## Market scanner
 
-The scanner monitors every returned `DIGITDIFF`-eligible market, records one-tick paper outcomes, requests live one-tick proposals in the configured Deriv account currency, and ranks markets by conservative estimated expected value. It requires at least 100 settled paper outcomes per market and uses the 95% Wilson lower confidence bound for the win probability. It does not execute contracts. Paper outcomes are not actual contract profitability; use forward testing and actual settlement records before enabling any execution.
+The scanner monitors every returned `DIGITDIFF`-eligible market, records one-tick paper outcomes, requests live one-tick proposals in the configured Deriv account currency, and ranks markets by conservative estimated expected value. It requires at least 100 settled paper outcomes for the exact currently quoted barrier and uses the 95% Wilson lower confidence bound for that barrier's win probability. It also shows the overall strategy win rate separately. It does not execute contracts. Paper outcomes are not actual contract profitability; use forward testing and actual settlement records before enabling any execution.
 
 ## Scope and limitations
 
