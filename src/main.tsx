@@ -212,17 +212,23 @@ function App() {
         return;
       }
       setSaved(false);
-      fetch('/api/settings', {
-        method: 'PUT',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(settings)
-      }).then((response) => {
-        if (!response.ok) throw new Error('Server rejected settings.');
-        setSaved(true);
-        setAuthMessage('');
-      }).catch((error) => setAuthMessage(error.message));
-      return;
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => {
+        fetch('/api/settings', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(settings),
+          signal: controller.signal
+        }).then((response) => {
+          if (!response.ok) throw new Error('Server rejected settings.');
+          setSaved(true);
+          setAuthMessage('');
+        }).catch((error) => {
+          if (error.name !== 'AbortError') setAuthMessage(error.message);
+        });
+      }, 350);
+      return () => { window.clearTimeout(timer); controller.abort(); };
     }
     if (backendAuth === 'unauthenticated' || backendAuth === 'unavailable') {
       try {
