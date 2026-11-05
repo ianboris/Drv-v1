@@ -148,7 +148,7 @@ function App() {
             const tickPipSize = response.tick.pip_size !== undefined
               ? Number(response.tick.pip_size)
               : pipSizeRef.current;
-            if (response.tick.pip_size !== undefined && typeof tickPipSize === 'number' && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10) {
+            if (response.tick.pip_size !== undefined && typeof tickPipSize === 'number' && typeof tickPipSize === 'number' && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10) {
               setPipSize(tickPipSize);
               pipSizeRef.current = tickPipSize;
             }
@@ -162,7 +162,7 @@ function App() {
                 quote,
                 epoch,
                 source: 'live',
-                ...(Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10
+                ...(typeof tickPipSize === 'number' && Number.isInteger(tickPipSize) && tickPipSize >= 0 && tickPipSize <= 10
                   ? { pipSize: tickPipSize, lastDigit: digitFromQuote(quote, tickPipSize) }
                   : {}),
               };
