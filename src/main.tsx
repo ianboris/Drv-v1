@@ -70,6 +70,7 @@ function App() {
   windowSizeRef.current = settings.windowSize;
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | undefined>();
+  const lastPersistedEpochRef = useRef(0);
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
@@ -112,6 +113,7 @@ function App() {
             const nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
             ticksRef.current = nextTicks;
             setTicks(nextTicks);
+            if (history.length) lastPersistedEpochRef.current = Math.max(lastPersistedEpochRef.current, ...history.map((tick) => tick.epoch));
             if (response.pip_size !== undefined) { setPipSize(Number(response.pip_size)); pipSizeRef.current = Number(response.pip_size); }
           }
           if (response.msg_type === 'tick' && response.tick) {
@@ -195,6 +197,22 @@ function App() {
       .finally(() => { if (active) setAuthChecking(false); });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!authenticated || !ticks.length) return;
+    const timer = window.setTimeout(async () => {
+      const pending = ticksRef.current.filter((tick) => tick.epoch > lastPersistedEpochRef.current).slice(0, 100);
+      if (!pending.length) return;
+      const payload = pending.map((tick) => ({ symbol, epoch: tick.epoch, quote: tick.quote, pipSize: pipSize ?? 0, lastDigit: digitFromQuote(tick.quote, pipSize) }));
+      try {
+        const response = await fetch('/api/ticks', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticks: payload }) });
+        if (!response.ok) throw new Error('Tick persistence rejected.');
+        lastPersistedEpochRef.current = pending[pending.length - 1].epoch;
+        setBackendStatus('Database connected · ticks saving');
+      } catch { setBackendStatus('Tick persistence failed'); }
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [ticks, authenticated, symbol, pipSize]);
 
   useEffect(() => {
     if (!authenticated || !settingsLoaded) return;
