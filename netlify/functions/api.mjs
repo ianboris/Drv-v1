@@ -152,19 +152,71 @@ async function handle(request) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
     const tickRows = Array.isArray(body?.ticks) ? body.ticks : [body];
     if (!tickRows.length || tickRows.length > 100 || tickRows.some((tick) =>
+      typeof tick?.tick_uid !== "string" || tick.tick_uid.length < 8 || tick.tick_uid.length > 160 ||
       typeof tick?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(tick.symbol) ||
       !Number.isSafeInteger(tick.epoch) || !Number.isFinite(Number(tick.quote)) ||
       !Number.isInteger(tick.pip_size) || tick.pip_size < 0 || tick.pip_size > 10 ||
       !Number.isInteger(tick.last_digit) || tick.last_digit < 0 || tick.last_digit > 9)) {
-      return json({ error: "Invalid tick batch. Send between 1 and 100 valid ticks." }, 400);
+      return json({ error: "Invalid tick batch. Each tick needs a stable tick_uid and valid market fields." }, 400);
     }
     const sql = getSql();
-    await sql`INSERT INTO ddpe_ticks (owner_id, symbol, tick_epoch, quote, pip_size, last_digit)
-      SELECT ${OWNER_ID}, item.symbol, item.epoch, item.quote, item.pip_size, item.last_digit
+    await sql`INSERT INTO ddpe_ticks (owner_id, symbol, tick_uid, tick_epoch, quote, pip_size, last_digit)
+      SELECT ${OWNER_ID}, item.symbol, item.tick_uid, item.epoch, item.quote, item.pip_size, item.last_digit
       FROM jsonb_to_recordset(${JSON.stringify(tickRows)}::jsonb)
-      AS item(symbol text, epoch bigint, quote numeric, pip_size smallint, last_digit smallint)
-      ON CONFLICT (owner_id, symbol, tick_epoch) DO NOTHING`;
+      AS item(symbol text, tick_uid text, epoch bigint, quote numeric, pip_size smallint, last_digit smallint)
+      ON CONFLICT (owner_id, symbol, tick_uid) DO NOTHING`;
     return json({ ok: true, accepted: tickRows.length });
+  }
+
+  if (method === "GET" && path === "/choices") {
+    const symbol = url.searchParams.get("symbol");
+    if (symbol && !/^[A-Za-z0-9_]{1,32}$/.test(symbol)) return json({ error: "Invalid symbol." }, 400);
+    const sql = getSql();
+    const rows = symbol
+      ? await sql`SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND symbol = ${symbol} AND is_correct IS NOT NULL ORDER BY settled_at_epoch DESC LIMIT 500`
+      : await sql`SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND is_correct IS NOT NULL ORDER BY settled_at_epoch DESC LIMIT 500`;
+    return json({ choices: rows.map((row) => ({
+      id: row.choice_uid,
+      symbol: row.symbol,
+      barrier: Number(row.barrier_digit),
+      predictedEpoch: Number(row.predicted_at_epoch),
+      settledEpoch: Number(row.settled_at_epoch),
+      outcomeDigit: Number(row.outcome_digit),
+      correct: Boolean(row.is_correct),
+      analysisWindow: Number(row.analysis_window),
+    })) });
+  }
+
+  if (method === "POST" && path === "/choices") {
+    assertSameOrigin(request);
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
+    const choices = Array.isArray(body?.choices) ? body.choices : [body];
+    if (!choices.length || choices.length > 100 || choices.some((choice) =>
+      typeof choice?.choice_uid !== "string" || choice.choice_uid.length < 8 || choice.choice_uid.length > 160 ||
+      typeof choice?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(choice.symbol) ||
+      !Number.isInteger(choice.barrier_digit) || choice.barrier_digit < 0 || choice.barrier_digit > 9 ||
+      !Number.isSafeInteger(choice.predicted_at_epoch) || !Number.isSafeInteger(choice.settled_at_epoch) ||
+      choice.settled_at_epoch <= choice.predicted_at_epoch ||
+      !Number.isInteger(choice.outcome_digit) || choice.outcome_digit < 0 || choice.outcome_digit > 9 ||
+      typeof choice.is_correct !== "boolean" ||
+      !Number.isInteger(choice.analysis_window) || choice.analysis_window < 50 || choice.analysis_window > 5000)) {
+      return json({ error: "Invalid settled choice batch." }, 400);
+    }
+    const sql = getSql();
+    await sql`INSERT INTO ddpe_prediction_choices
+      (owner_id, choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window)
+      SELECT ${OWNER_ID}, item.choice_uid, item.symbol, item.barrier_digit, item.predicted_at_epoch,
+        item.settled_at_epoch, item.outcome_digit, item.is_correct, item.analysis_window
+      FROM jsonb_to_recordset(${JSON.stringify(choices)}::jsonb)
+      AS item(choice_uid text, symbol text, barrier_digit smallint, predicted_at_epoch bigint,
+        settled_at_epoch bigint, outcome_digit smallint, is_correct boolean, analysis_window integer)
+      ON CONFLICT (owner_id, choice_uid) DO UPDATE SET
+        settled_at_epoch = EXCLUDED.settled_at_epoch,
+        outcome_digit = EXCLUDED.outcome_digit,
+        is_correct = EXCLUDED.is_correct,
+        analysis_window = EXCLUDED.analysis_window`;
+    return json({ ok: true, accepted: choices.length });
   }
 
   return json({ error: "Not found." }, 404);
