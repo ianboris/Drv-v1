@@ -27,11 +27,11 @@ Run `db/migrations/001_ddpe_core.sql` once against the intended Neon database. T
 5. GET `/api/settings`, then PUT JSON `{"stake":1,"dailyLossLimit":2,"windowSize":100}`.
 6. GET `/api/settings` again and confirm the saved values persist.
 
-The React UI has not yet been switched to these endpoints. Until that client integration is completed, its Settings page still uses browser localStorage.
+The React UI now checks the backend session and can log in from Settings. When authenticated, it loads and saves settings through the server API; when the backend is unavailable or signed out, it falls back to browser localStorage. The dashboard does not yet persist ticks or paper-prediction outcomes to Neon.
 
 ## Security and operational limitations
 
-- This is a single-owner password gate, not multi-user identity management.
+- This is a single-owner password gate, not multi-user identity management. It currently has no distributed login rate limiter; add one before production exposure (for example, a Neon-backed per-IP attempt window) and use a strong unique password.
 - Rotate any Deriv or database credentials that were previously pasted into chats or other public/shared locations.
 - The health endpoint does not authenticate Deriv and deliberately reports `liveExecution: false`.
 - No proposal, buy, contract-monitoring, or STOP worker endpoint is included.
