@@ -116,6 +116,8 @@ async function handle(request) {
   const session = getSession(request);
   if (!session) return json({ error: "Authentication required." }, 401);
 
+  if (method === "GET" && path === "/session") return json({ authenticated: true, expires_at: session.exp });
+
   if (method === "GET" && path === "/settings") {
     const sql = getSql();
     const rows = await sql`SELECT stake::text, daily_loss_limit::text, analysis_window FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
