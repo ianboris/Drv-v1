@@ -205,7 +205,10 @@ async function handle(request) {
     const rows = symbol
       ? await sql`SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND symbol = ${symbol} AND is_correct IS NOT NULL ORDER BY settled_at_epoch DESC LIMIT 500`
       : await sql`SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window FROM (SELECT choice_uid, symbol, barrier_digit, predicted_at_epoch, settled_at_epoch, outcome_digit, is_correct, analysis_window, ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY settled_at_epoch DESC) AS market_rank FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND is_correct IS NOT NULL) ranked WHERE market_rank <= 500 ORDER BY symbol, settled_at_epoch DESC`;
-    return json({ choices: rows.map((row) => ({
+    const aggregateRows = symbol
+      ? await sql`SELECT symbol, barrier_digit, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE is_correct = TRUE)::int AS wins FROM (SELECT symbol, barrier_digit, is_correct, ROW_NUMBER() OVER (PARTITION BY symbol, barrier_digit ORDER BY settled_at_epoch DESC) AS barrier_rank FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND symbol = ${symbol} AND is_correct IS NOT NULL) ranked WHERE barrier_rank <= 500 GROUP BY symbol, barrier_digit`
+      : await sql`SELECT symbol, barrier_digit, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE is_correct = TRUE)::int AS wins FROM (SELECT symbol, barrier_digit, is_correct, ROW_NUMBER() OVER (PARTITION BY symbol, barrier_digit ORDER BY settled_at_epoch DESC) AS barrier_rank FROM ddpe_prediction_choices WHERE owner_id = ${OWNER_ID} AND is_correct IS NOT NULL) ranked WHERE barrier_rank <= 500 GROUP BY symbol, barrier_digit`;
+    return json({ aggregates: aggregateRows.map((row) => ({ symbol: row.symbol, barrier: Number(row.barrier_digit), total: Number(row.total), wins: Number(row.wins) })), choices: rows.map((row) => ({
       id: row.choice_uid,
       symbol: row.symbol,
       barrier: Number(row.barrier_digit),
