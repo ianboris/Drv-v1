@@ -428,7 +428,8 @@ function App() {
     const history = choiceOutcomes.filter((choice) => choice.symbol === item.underlying_symbol);
     const wins = history.filter((choice) => choice.correct).length;
     const total = history.length;
-    const quote = proposalQuotes[item.underlying_symbol];
+    const storedQuote = proposalQuotes[item.underlying_symbol];
+    const quote = storedQuote && Date.now() - storedQuote.quotedAt <= 90000 ? storedQuote : undefined;
     const winRate = total ? wins / total : null;
     const conservativeWinRate = total ? wilsonLowerBound(wins, total) : null;
     const conservativeEv = quote && conservativeWinRate !== null ? conservativeWinRate * quote.payout - quote.askPrice : null;
@@ -436,6 +437,7 @@ function App() {
   }).sort((a, b) => (b.conservativeEv ?? -Infinity) - (a.conservativeEv ?? -Infinity)), [symbols, choiceOutcomes, proposalQuotes]);
   const qualifiedMarkets = scannerRows.filter((row) => row.total >= 100 && row.quote && row.conservativeEv !== null && row.conservativeEv > 0);
   const bestMarket = qualifiedMarkets[0] || null;
+  const highestWinRateMarket = scannerRows.filter((row) => row.total >= 100 && row.winRate !== null).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1))[0] || null;
   const differsEstimate = stats.sample ? (1 - stats.barrierRate) * 100 : 0;
   const symbolOutcomes = choiceOutcomes.filter((item) => item.symbol === symbol);
   const settledCorrect = symbolOutcomes.filter((item) => item.correct).length;
@@ -471,9 +473,13 @@ function App() {
   };
 
   useEffect(() => {
-    if (!authenticated || !settings.currency) return;
+    if (!authenticated || !settings.currency) { setProposalQuotes({}); return; }
+    setProposalQuotes({});
     symbols.forEach((item) => requestMarketProposal(item.underlying_symbol));
-    const timer = window.setInterval(() => symbols.forEach((item) => requestMarketProposal(item.underlying_symbol)), 60000);
+    const timer = window.setInterval(() => {
+      setProposalQuotes((previous) => Object.fromEntries(Object.entries(previous).filter(([, quote]) => Date.now() - quote.quotedAt <= 90000)));
+      symbols.forEach((item) => requestMarketProposal(item.underlying_symbol));
+    }, 60000);
     return () => window.clearInterval(timer);
   }, [authenticated, symbols, settings.currency, settings.stake, settings.windowSize]);
 
@@ -550,7 +556,8 @@ function App() {
 
       <section className="panel market-scanner">
         <div className="panel-title"><div><div className="section-heading">MARKET PROFITABILITY SCANNER</div><p className="muted">All eligible markets · live one-tick DIGITDIFF quotes · settled paper outcomes.</p></div><span className="live-dot">{settings.currency ? 'SCANNING' : 'SET CURRENCY'}</span></div>
-        {bestMarket ? <div className="scanner-leader"><span>Best qualified candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed win rate · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} conservative EV per contract</small></div> : <p className="muted">No market has met every gate yet: at least 100 settled paper choices, a current proposal quote in your account currency, and positive conservative expected value. The scanner will not call an under-sampled market profitable.</p>}
+        {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed win rate (100+ outcomes)</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% observed win rate from {highestWinRateMarket.total} settled paper outcomes</small></div>}
+        {bestMarket ? <div className="scanner-leader"><span>Best profitability-qualified candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed win rate · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} conservative EV per contract</small></div> : <p className="muted">No market has met every profitability gate yet: at least 100 settled paper choices, a fresh proposal quote in your account currency, and positive conservative expected value. The scanner will not call an under-sampled market profitable.</p>}
         <div className="table-wrap"><table><thead><tr><th>Market</th><th>Settled</th><th>Win rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Conservative EV</th><th>Gate</th></tr></thead><tbody>
           {scannerRows.map((row) => <tr key={row.symbol}><td><button className="text-button" onClick={() => selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.total}</td><td>{row.winRate === null ? '—' : (row.winRate * 100).toFixed(2) + '%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate * 100).toFixed(2) + '%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv >= 0 ? '+' : ''}${row.conservativeEv.toFixed(4)} ${settings.currency}`}</td><td>{row.total < 100 ? 'Need 100 outcomes' : !row.quote ? 'Need live quote' : row.conservativeEv! > 0 ? 'Positive estimate' : 'Not profitable'}</td></tr>)}
           {!scannerRows.length && <tr><td colSpan={7} className="empty">Waiting for eligible Differs markets…</td></tr>}
