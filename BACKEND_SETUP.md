@@ -2,9 +2,26 @@
 
 This branch adds the first server-side connection layer. It does not enable Deriv trading.
 
-## Netlify environment variables
+## Vercel deployment (recommended)
 
-Set these in Netlify Site configuration -> Environment variables, for the production and deploy-preview contexts you intend to test:
+The repository includes `api/[...path].mjs`, which exposes the shared backend handler as a Vercel Web Function. Vercel's Node.js runtime supports standard Web Request/Response handlers. The Vite frontend builds to `dist`.
+
+1. Import `ianboris/Drv-v1` into Vercel.
+2. Select the `deploy/vercel-neon-adapter` branch for a preview deployment, or wait until the changes are reviewed and merged before using the production branch.
+3. Keep the build command as `npm run build` and output directory as `dist` (also specified in `vercel.json`).
+4. In Vercel Project Settings -> Environment Variables, add the three variables below for Preview first, then Production only after verification.
+5. Apply the Neon migration in the Neon SQL Editor.
+6. Deploy and test `https://YOUR-DEPLOYMENT/api/health` before attempting login.
+
+The shared API implementation still uses Node.js APIs and `@neondatabase/serverless`; this Vercel adapter is not a Cloudflare Workers adapter.
+
+## Netlify alternative
+
+The same backend can still run on Netlify using the existing `netlify.toml` and function directory. Set the same variables in Netlify Site configuration -> Environment variables.
+
+## Required server environment variables
+
+Set these in your hosting provider's environment variables for the deployment contexts you intend to test:
 
 - `DATABASE_URL`: Neon pooled PostgreSQL connection string. Keep it server-side.
 - `DDPE_LOGIN_PASSWORD`: a new, strong app password of at least 16 characters. Do not reuse your Deriv token or another account password.
@@ -18,7 +35,7 @@ Run `db/migrations/001_ddpe_core.sql` against the intended Neon database once. V
 
 ## Deploy and test
 
-The Netlify function is exposed through same-origin routes:
+The backend function is exposed through same-origin routes on Vercel and Netlify:
 
 - `GET /api/health`: reports whether the database and required app configuration are available.
 - `POST /api/login`: body: `{"password":"your app password"}`; sets a Secure, HttpOnly, SameSite=Strict session cookie.

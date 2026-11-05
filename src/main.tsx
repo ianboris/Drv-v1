@@ -182,8 +182,17 @@ function App() {
 
   useEffect(() => {
     let active = true;
-    fetch('/api/health', { cache: 'no-store' }).then((response) => response.json()).then((data) => {
-      if (active) setBackendStatus(data?.checks?.database_connected ? 'Database connected' : 'Backend needs configuration');
+    fetch('/api/health', { cache: 'no-store' }).then(async (response) => {
+      const data = await response.json();
+      if (!active) return;
+      const checks = data?.checks;
+      if (response.ok && checks?.database_connected && checks?.login_configured && checks?.session_secret_configured) {
+        setBackendStatus('Backend ready · Neon connected');
+      } else if (!checks?.database_connected) {
+        setBackendStatus('Neon database not connected');
+      } else {
+        setBackendStatus('Backend configuration incomplete');
+      }
     }).catch(() => { if (active) setBackendStatus('Backend unavailable'); });
     fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' }).then(async (response) => {
       if (!response.ok) return null;
@@ -278,7 +287,7 @@ function App() {
   };
 
   if (authChecking) return <main className="login-shell"><section className="panel login-panel"><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Checking secure session</h1><p className="muted">{backendStatus}</p></section></main>;
-  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Sign in</h1><p className="muted">Use the private app password configured in Netlify. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
+  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Sign in</h1><p className="muted">Use the private app password configured in your deployment's environment variables. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
 
   return <main>
     <header className="topbar">
