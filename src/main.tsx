@@ -259,6 +259,11 @@ function App() {
                       try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(updated)); } catch {}
                       return updated;
                     });
+                    setChoiceAggregates((previous) => {
+                      const existing = previous.find((item) => item.symbol === outcome.symbol && item.barrier === outcome.barrier);
+                      if (existing) return previous.map((item) => item === existing ? { ...item, total: item.total + 1, wins: item.wins + (outcome.correct ? 1 : 0) } : item);
+                      return [...previous, { symbol: outcome.symbol, barrier: outcome.barrier, total: 1, wins: outcome.correct ? 1 : 0 }];
+                    });
                     fetch('/api/choices', {
                       method: 'POST',
                       credentials: 'same-origin',
