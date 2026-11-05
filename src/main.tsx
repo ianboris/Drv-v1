@@ -53,6 +53,10 @@ function App() {
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<Settings>(readSettings);
   const [saved, setSaved] = useState(true);
+  const [backendAuth, setBackendAuth] = useState<'checking' | 'authenticated' | 'unauthenticated' | 'unavailable'>('checking');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [authMessage, setAuthMessage] = useState('');
+  const [remoteSettingsReady, setRemoteSettingsReady] = useState(false);
   const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
     try { return JSON.parse(localStorage.getItem('ddpe-choice-outcomes-v1') || '[]') as ChoiceOutcome[]; }
     catch { return []; }
@@ -168,11 +172,71 @@ function App() {
   }, [symbol]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('ddpe-settings-v1', JSON.stringify(settings));
-      setSaved(true);
-    } catch { setSaved(false); }
-  }, [settings]);
+    let active = true;
+    fetch('/api/auth', { credentials: 'same-origin' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Backend authentication endpoint is unavailable.');
+        const result = await response.json();
+        if (active) setBackendAuth(result.authenticated ? 'authenticated' : 'unauthenticated');
+      })
+      .catch(() => { if (active) setBackendAuth('unavailable'); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (backendAuth !== 'authenticated') return;
+    let active = true;
+    fetch('/api/settings', { credentials: 'same-origin' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Could not load server settings.');
+        return response.json();
+      })
+      .then((result) => {
+        if (!active) return;
+        setSettings({
+          stake: Number(result.stake) || 1,
+          dailyLossLimit: Number(result.dailyLossLimit) || 2,
+          windowSize: Number(result.windowSize) || 100
+        });
+        setRemoteSettingsReady(true);
+        setSaved(true);
+      })
+      .catch((error) => { if (active) { setAuthMessage(error.message); setRemoteSettingsReady(false); } });
+    return () => { active = false; };
+  }, [backendAuth]);
+
+  useEffect(() => {
+    if (backendAuth === 'authenticated' && remoteSettingsReady) {
+      if (!(settings.stake > 0 && settings.dailyLossLimit > 0 && settings.windowSize >= 50)) {
+        setSaved(false);
+        return;
+      }
+      setSaved(false);
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => {
+        fetch('/api/settings', {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(settings),
+          signal: controller.signal
+        }).then((response) => {
+          if (!response.ok) throw new Error('Server rejected settings.');
+          setSaved(true);
+          setAuthMessage('');
+        }).catch((error) => {
+          if (error.name !== 'AbortError') setAuthMessage(error.message);
+        });
+      }, 350);
+      return () => { window.clearTimeout(timer); controller.abort(); };
+    }
+    if (backendAuth === 'unauthenticated' || backendAuth === 'unavailable') {
+      try {
+        localStorage.setItem('ddpe-settings-v1', JSON.stringify(settings));
+        setSaved(true);
+      } catch { setSaved(false); }
+    }
+  }, [settings, backendAuth, remoteSettingsReady]);
 
   const digits = useMemo(() => ticks.map((tick) => digitFromQuote(tick.quote, pipSize)), [ticks, pipSize]);
   const rollingDigits = digits.slice(-settings.windowSize);
@@ -189,10 +253,38 @@ function App() {
   };
   const validSettings = settings.stake > 0 && settings.dailyLossLimit > 0 && settings.windowSize >= 50;
 
+  const login = async () => {
+    setAuthMessage('');
+    try {
+      const response = await fetch('/api/auth', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: loginPassword })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Login failed.');
+      setLoginPassword('');
+      setBackendAuth('authenticated');
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : 'Login failed.');
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await fetch('/api/auth', { method: 'DELETE', credentials: 'same-origin' });
+    } finally {
+      setBackendAuth('unauthenticated');
+      setRemoteSettingsReady(false);
+      setAuthMessage('Signed out. Settings will remain local to this browser.');
+    }
+  };
+
   return <main>
     <header className="topbar">
       <div><div className="eyebrow">DDPE · DERIV DIFFERS</div><h1>Digit Prediction Engine</h1><p className="subhead">Live market research and risk controls</p></div>
-      <span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span>
+      <div className="header-status"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span><span className="auth-indicator">{backendAuth === 'authenticated' ? 'BACKEND AUTHENTICATED' : backendAuth === 'checking' ? 'CHECKING BACKEND' : backendAuth === 'unavailable' ? 'BACKEND UNAVAILABLE' : 'BACKEND SIGN-IN REQUIRED'}</span></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
@@ -281,11 +373,17 @@ function App() {
     </>}
 
     {tab === 'settings' && <>
+      <section className="panel auth-panel">
+        <div className="panel-title"><div><div className="section-heading">BACKEND CONNECTION</div><p className="muted">{backendAuth === 'authenticated' ? 'Authenticated session active. Settings are stored in Neon.' : backendAuth === 'unavailable' ? 'Backend endpoints are not deployed or configured. Local settings remain available.' : 'Sign in to persist settings in Neon.'}</p></div><span className="saved-state">{backendAuth.toUpperCase()}</span></div>
+        {backendAuth === 'authenticated' ? <button className="secondary-button" onClick={logout}>Sign out</button> : <div className="login-row"><input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} placeholder="DDPE app password" /><button className="secondary-button" disabled={!loginPassword} onClick={login}>Connect backend</button></div>}
+        {authMessage && <p className="validation-error">{authMessage}</p>}
+        <small className="default-note">Configure DDPE_APP_PASSWORD, DDPE_SESSION_SECRET and DATABASE_URL in Netlify before signing in.</small>
+      </section>
       <section className="panel settings-panel">
-        <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Initial limits are set to your requested values.</p></div><span className="saved-state">{saved ? 'Saved on this device' : 'Saving…'}</span></div>
+        <div className="panel-title"><div><div className="section-heading">TRADING RISK</div><p className="muted">Initial limits are set to your requested values.</p></div><span className="saved-state">{saved ? (backendAuth === 'authenticated' ? 'Saved to Neon' : 'Saved on this device') : 'Saving…'}</span></div>
         <label className="setting-field">Stake per trade (USD)
           <div className="input-wrap"><span>$</span><input type="number" min="0.35" max="1000" step="0.01" value={settings.stake} onChange={(event) => changeSetting('stake', Number(event.target.value))} /></div>
-          <small>Applied as the proposed contract stake when execution is enabled. Deriv minimums and account currency will still be checked by the backend.</small>
+          <small>Stored as your intended stake. Live execution remains disabled until account currency and Deriv minimums are verified.</small>
         </label>
         <label className="setting-field">Maximum daily loss (USD)
           <div className="input-wrap"><span>$</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.dailyLossLimit} onChange={(event) => changeSetting('dailyLossLimit', Number(event.target.value))} /></div>
@@ -302,13 +400,13 @@ function App() {
         <div className="section-heading">EXECUTION SAFETY</div>
         <ul>
           <li>Live trading remains disabled in this build.</li>
-          <li>Risk settings currently persist in this browser only. They are not yet stored in Neon or enforced by a server-side worker.</li>
+          <li>{backendAuth === 'authenticated' ? 'Risk settings are stored in Neon, but no trading worker enforces them yet.' : 'Risk settings persist in this browser until you authenticate the backend.'}</li>
           <li>Before enabling execution, the backend must revalidate limits, track settled net P/L by Uganda-local trading day, and reject duplicate orders.</li>
         </ul>
       </section>
     </>}
 
-    <footer>DDPE research interface · public Deriv tick feed · no order execution in this build</footer>
+    <footer>DDPE research interface · public Deriv tick feed · authenticated settings backend · no order execution</footer>
   </main>;
 }
 

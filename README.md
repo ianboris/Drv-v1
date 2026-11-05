@@ -35,6 +35,6 @@ The app is a static Vite site. Configure the hosting provider with:
 - Build command: `npm run build`
 - Publish directory: `dist`
 
-## Scope and limitations
+## Backend setup\n\nSee [docs/BACKEND_SETUP.md](docs/BACKEND_SETUP.md) for Netlify environment variables, Neon migration, authentication setup, and verification steps.\n\n## Scope and limitations
 
-This repository currently contains a public-market-data research interface only. It does not authenticate a Deriv account, submit proposals, buy contracts, or execute trades. Displayed digit-frequency anomalies are descriptive statistics, not validated predictive signals. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.
+The repository includes a public Deriv market-data interface and an optional password-gated backend for persistent settings. It does not yet authenticate a Deriv trading account, submit proposals, buy contracts, persist tick/prediction history, or execute trades. Displayed digit-frequency anomalies are descriptive statistics, not validated predictive signals. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.
