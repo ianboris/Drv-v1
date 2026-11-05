@@ -451,7 +451,7 @@ function App() {
   };
   const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
 
-  const requestMarketProposal = (marketSymbol: string, marketTicks?: Tick[]) => {
+  function requestMarketProposal(marketSymbol: string, marketTicks?: Tick[]) {
     const currentSettings = settingsRef.current;
     const socket = ws.current;
     if (!currentSettings.currency || !socket || socket.readyState !== WebSocket.OPEN) return;
@@ -463,7 +463,7 @@ function App() {
     const reqId = proposalReqIdRef.current++;
     proposalRequestsRef.current.set(reqId, { symbol: marketSymbol, barrier, currency: currentSettings.currency, stake: currentSettings.stake });
     socket.send(JSON.stringify({ proposal: 1, amount: currentSettings.stake, basis: 'stake', contract_type: 'DIGITDIFF', currency: currentSettings.currency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(barrier), req_id: reqId }));
-  };
+  }
 
   const selectSymbol = (nextSymbol: string) => {
     if (nextSymbol === selectedSymbolRef.current) return;
