@@ -264,10 +264,12 @@ function App() {
       const data = await response.json();
       if (!active) return;
       const checks = data?.checks;
-      if (response.ok && checks?.database_connected && checks?.login_configured && checks?.session_secret_configured) {
+      if (response.ok && checks?.database_connected && checks?.schema_ready && checks?.login_configured && checks?.session_secret_configured) {
         setBackendStatus('Backend ready · Neon connected');
       } else if (!checks?.database_connected) {
         setBackendStatus('Neon database not connected');
+      } else if (!checks?.schema_ready) {
+        setBackendStatus('Neon migrations not applied');
       } else {
         setBackendStatus('Backend configuration incomplete');
       }
