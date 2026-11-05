@@ -223,13 +223,19 @@ function App() {
 
   useEffect(() => {
     if (!authenticated || !settingsLoaded) return;
+    if (!(settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000)) {
+      setSaved(false);
+      return;
+    }
     let active = true;
-    setSaved(false);
-    fetch('/api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) })
-      .then((response) => { if (!response.ok) throw new Error('Server rejected settings.'); return response.json(); })
-      .then(() => { if (active) setSaved(true); })
-      .catch(() => { if (active) { setSaved(false); setBackendStatus('Settings save failed'); } });
-    return () => { active = false; };
+    const timer = window.setTimeout(() => {
+      setSaved(false);
+      fetch('/api/settings', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) })
+        .then((response) => { if (!response.ok) throw new Error('Server rejected settings.'); return response.json(); })
+        .then(() => { if (active) setSaved(true); })
+        .catch(() => { if (active) { setSaved(false); setBackendStatus('Settings save failed'); } });
+    }, 500);
+    return () => { active = false; window.clearTimeout(timer); };
   }, [settings, authenticated, settingsLoaded]);
 
   const digits = useMemo(() => ticks.map((tick) => digitFromQuote(tick.quote, pipSize)), [ticks, pipSize]);
