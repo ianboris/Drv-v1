@@ -6,6 +6,7 @@ const WS = 'wss://ws.derivws.com/websockets/v3?app_id=1089';
 type Tick = { quote: number; epoch: number };
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
 type Settings = { stake: number; dailyLossLimit: number; windowSize: number };
+type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean };
 type Tab = 'overview' | 'activity' | 'settings';
 const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100 };
 
@@ -52,12 +53,22 @@ function App() {
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<Settings>(readSettings);
   const [saved, setSaved] = useState(true);
+  const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
+    try { return JSON.parse(localStorage.getItem('ddpe-choice-outcomes-v1') || '[]') as ChoiceOutcome[]; }
+    catch { return []; }
+  });
+  const ticksRef = useRef<Tick[]>([]);
+  const pendingChoiceRef = useRef<{ symbol: string; barrier: number; predictedEpoch: number } | null>(null);
+  const pipSizeRef = useRef<number | undefined>(undefined);
+  const windowSizeRef = useRef(settings.windowSize);
+  windowSizeRef.current = settings.windowSize;
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | undefined>();
 
   useEffect(() => {
     let alive = true;
     let socket: WebSocket | null = null;
+    pendingChoiceRef.current = null;
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
@@ -89,21 +100,48 @@ function App() {
             const times: number[] = response.history?.times || [];
             const history = prices.map((quote, i) => ({ quote: Number(quote), epoch: Number(times[i]) }))
               .filter((tick) => Number.isFinite(tick.quote) && Number.isFinite(tick.epoch));
-            setTicks((current) => {
-              const merged = new Map<number, Tick>();
-              [...history, ...current].forEach((tick) => merged.set(tick.epoch, tick));
-              return [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
-            });
-            if (response.pip_size !== undefined) setPipSize(Number(response.pip_size));
+            const merged = new Map<number, Tick>();
+            [...history, ...ticksRef.current].forEach((tick) => merged.set(tick.epoch, tick));
+            const nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
+            ticksRef.current = nextTicks;
+            setTicks(nextTicks);
+            if (response.pip_size !== undefined) { setPipSize(Number(response.pip_size)); pipSizeRef.current = Number(response.pip_size); }
           }
           if (response.msg_type === 'tick' && response.tick) {
             const tick = { quote: Number(response.tick.quote), epoch: Number(response.tick.epoch) };
-            if (response.tick.pip_size !== undefined) setPipSize(Number(response.tick.pip_size));
+            const tickPipSize = response.tick.pip_size !== undefined ? Number(response.tick.pip_size) : pipSizeRef.current;
+            if (response.tick.pip_size !== undefined) { setPipSize(tickPipSize); pipSizeRef.current = tickPipSize; }
             if (Number.isFinite(tick.quote) && Number.isFinite(tick.epoch)) {
-              setTicks((current) => {
-                if (current.some((item) => item.epoch === tick.epoch)) return current;
-                return [...current, tick].sort((a, b) => a.epoch - b.epoch).slice(-5000);
-              });
+              const currentTicks = ticksRef.current;
+              if (!currentTicks.some((item) => item.epoch === tick.epoch)) {
+                const incomingDigit = digitFromQuote(tick.quote, tickPipSize);
+                const pending = pendingChoiceRef.current;
+                if (pending && pending.symbol === symbol && tick.epoch > pending.predictedEpoch) {
+                  const outcome: ChoiceOutcome = {
+                    id: `${pending.symbol}-${pending.predictedEpoch}-${tick.epoch}`,
+                    symbol: pending.symbol,
+                    barrier: pending.barrier,
+                    predictedEpoch: pending.predictedEpoch,
+                    settledEpoch: tick.epoch,
+                    outcomeDigit: incomingDigit,
+                    correct: incomingDigit !== pending.barrier
+                  };
+                  setChoiceOutcomes((previous) => {
+                    const updated = [...previous, outcome].slice(-5000);
+                    try { localStorage.setItem('ddpe-choice-outcomes-v1', JSON.stringify(updated)); } catch {}
+                    return updated;
+                  });
+                  pendingChoiceRef.current = null;
+                }
+                const priorDigits = currentTicks.slice(-windowSizeRef.current).map((item) => digitFromQuote(item.quote, tickPipSize));
+                if (priorDigits.length >= windowSizeRef.current) {
+                  const priorStats = getStats(priorDigits);
+                  if (priorStats.barrier >= 0) pendingChoiceRef.current = { symbol, barrier: priorStats.barrier, predictedEpoch: tick.epoch };
+                }
+                const nextTicks = [...currentTicks, tick].sort((a, b) => a.epoch - b.epoch).slice(-5000);
+                ticksRef.current = nextTicks;
+                setTicks(nextTicks);
+              }
             }
           }
         } catch { setError('Could not read the Deriv market-data response.'); }
@@ -142,6 +180,9 @@ function App() {
   const overallStats = useMemo(() => getStats(digits), [digits]);
   const marketName = symbols.find((item) => item.underlying_symbol === symbol)?.underlying_symbol_name || symbol;
   const differsEstimate = stats.sample ? (1 - stats.barrierRate) * 100 : 0;
+  const symbolOutcomes = choiceOutcomes.filter((item) => item.symbol === symbol);
+  const settledCorrect = symbolOutcomes.filter((item) => item.correct).length;
+  const settledAccuracy = symbolOutcomes.length ? settledCorrect / symbolOutcomes.length * 100 : null;
   const changeSetting = (key: keyof Settings, value: number) => {
     setSettings((current) => ({ ...current, [key]: value }));
     setSaved(false);
@@ -211,6 +252,12 @@ function App() {
     </>}
 
     {tab === 'activity' && <>
+      <section className="accuracy-strip" aria-live="polite">
+        <div><span className="section-heading">LIVE CHOICE ACCURACY</span><small>One-tick paper outcomes · {symbol}</small></div>
+        <strong>{settledAccuracy === null ? '—' : settledAccuracy.toFixed(1) + '%'}</strong>
+        <span className="accuracy-sample">{symbolOutcomes.length} settled {symbolOutcomes.length === 1 ? 'choice' : 'choices'}</span>
+      </section>
+      <p className="accuracy-note">Each choice selects the least-frequent digit using the preceding analysis window. It is scored against the next live tick only. This is a paper prediction statistic, not actual contract win rate, net profitability, or a guarantee. It resets only if this browser's local data is cleared.</p>
       <section className="panel">
         <div className="section-heading">ROLLING DIGIT DISTRIBUTION</div>
         <p className="muted">Observed frequencies over the latest {stats.sample} ticks. Frequency alone does not establish a predictive edge.</p>
@@ -224,9 +271,12 @@ function App() {
         </tbody></table></div>
       </section>
       <section className="panel">
-        <div className="section-heading">EXECUTION & PERFORMANCE LOG</div>
-        <p className="muted">No orders or settled contracts are recorded. This panel will show proposal prices, contract IDs, outcomes, net P/L and model performance after the execution and database services are connected.</p>
-        <div className="empty-state">No executed trades in this build.</div>
+        <div className="section-heading">RECENT MODEL CHOICES</div>
+        <p className="muted">These are recorded one-tick paper choices, not purchases.</p>
+        <div className="table-wrap"><table><thead><tr><th>Time (UTC)</th><th>Barrier</th><th>Next digit</th><th>Result</th></tr></thead><tbody>
+          {symbolOutcomes.slice(-12).reverse().map((item) => <tr key={item.id}><td>{new Date(item.settledEpoch * 1000).toLocaleTimeString()}</td><td>{item.barrier}</td><td>{item.outcomeDigit}</td><td className={item.correct ? 'result-win' : 'result-loss'}>{item.correct ? 'Correct' : 'Incorrect'}</td></tr>)}
+          {!symbolOutcomes.length && <tr><td colSpan={4} className="empty">No settled choices yet. Collect at least one full analysis window, then wait for the next tick.</td></tr>}
+        </tbody></table></div>
       </section>
     </>}
 
