@@ -59,3 +59,8 @@ The owner scope is currently a single-operator constant (`primary`). Do not use 
 ## Data integrity migration
 
 Before deploying the runtime-fix branch, apply `db/migrations/002_tick_and_choice_identity.sql` after migration 001. It backfills stable IDs for existing tick and choice rows, permits distinct ticks and paper outcomes within the same Unix second, and creates the persistent login-throttle table. The backend health endpoint checks for this table and reports `schema_ready: false` until the migration is applied.
+
+
+## Market-data collection scope
+
+The browser collector requests the Deriv active-symbol list filtered to the DIGITDIFF contract type, then staggers historical seeding and live tick subscriptions for each returned underlying. The selected market controls the visible dashboard; all returned DIGITDIFF-capable markets are collected and their ticks/paper choices are persisted separately. If Deriv changes the active-symbol filter or returns no eligible symbols, check the browser's Deriv API error/status before assuming the feed is active.
