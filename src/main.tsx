@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
 import { calculateContractEconomics } from './riskCalculator';
+import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -100,6 +101,13 @@ function App() {
   const [status, setStatus] = useState('CONNECTING');
   const [error, setError] = useState('');
   const [authenticated, setAuthenticated] = useState(false);
+  const [derivDemoConnected, setDerivDemoConnected] = useState(false);
+  const [derivDemoAccounts, setDerivDemoAccounts] = useState<Array<{account_id:string;currency:string;balance:number|null}>>([]);
+  const [selectedDemoAccountId, setSelectedDemoAccountId] = useState('');
+  const [derivDemoMessage, setDerivDemoMessage] = useState('Not connected');
+  const [derivDemoBusy, setDerivDemoBusy] = useState(false);
+  const [backtestResult, setBacktestResult] = useState<WalkForwardBacktestResult | null>(null);
+  const [backtestStrategy, setBacktestStrategy] = useState<ResearchStrategy>('DIFFERS');
   const [authChecking, setAuthChecking] = useState(true);
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -127,6 +135,7 @@ function App() {
   const windowSizeRef = useRef(settings.windowSize);
   windowSizeRef.current = settings.windowSize;
   const ws = useRef<WebSocket | null>(null);
+  const demoWs = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<number | undefined>();
   const pendingTicksRef = useRef<Array<{ tick_uid: string; symbol: string; epoch: number; quote: number; pip_size: number; last_digit: number }>>([]);
   const persistInFlightRef = useRef(false);
@@ -134,6 +143,31 @@ function App() {
   const proposalReqIdRef = useRef(3000);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let active = true;
+    fetch('/api/deriv/demo/status', { credentials: 'same-origin' })
+      .then(response => response.ok ? response.json() : Promise.reject(new Error('No Deriv demo connection')))
+      .then(async data => {
+        if (!active) return;
+        setDerivDemoConnected(Boolean(data.connected));
+        setDerivDemoMessage(data.connected ? 'Deriv authorization connected · demo account not yet selected' : 'Not connected');
+        if (data.connected) {
+          const response = await fetch('/api/deriv/demo/accounts', { credentials: 'same-origin' });
+          if (!response.ok) throw new Error('Could not load demo accounts. Reconnect Deriv.');
+          const result = await response.json();
+          if (!active) return;
+          setDerivDemoAccounts(result.accounts || []);
+          if (data.account_id) setSelectedDemoAccountId(data.account_id);
+          else if (result.accounts?.[0]) setSelectedDemoAccountId(result.accounts[0].account_id);
+        }
+      })
+      .catch(() => { if (active) { setDerivDemoConnected(false); setDerivDemoMessage('Not connected'); } });
+    return () => { active = false; };
+  }, [authenticated]);
+
+  useEffect(() => () => { demoWs.current?.close(); }, []);
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
@@ -590,6 +624,57 @@ function App() {
     setSettings((current) => ({ ...current, [key]: value } as Settings));
     setSaved(false);
   };
+  async function beginDerivOAuth() {
+    setDerivDemoBusy(true);
+    setDerivDemoMessage('Opening secure Deriv authorization…');
+    try {
+      const response = await fetch('/api/deriv/oauth/start', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const result = await response.json();
+      if (!response.ok || !result.authorization_url) throw new Error(result.error || 'Could not start Deriv authorization.');
+      window.location.assign(result.authorization_url);
+    } catch (error) {
+      setDerivDemoMessage(error instanceof Error ? error.message : 'Deriv authorization failed.');
+      setDerivDemoBusy(false);
+    }
+  }
+
+  async function openDerivDemoSession() {
+    if (!selectedDemoAccountId) return;
+    setDerivDemoBusy(true);
+    setDerivDemoMessage('Requesting short-lived demo session…');
+    try {
+      const response = await fetch('/api/deriv/demo/otp', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ account_id: selectedDemoAccountId }) });
+      const result = await response.json();
+      if (!response.ok || !result.websocket_url) throw new Error(result.error || 'Could not open demo session.');
+      demoWs.current?.close();
+      const socket = new WebSocket(result.websocket_url);
+      demoWs.current = socket;
+      socket.onopen = () => { setDerivDemoMessage('DEMO WEBSOCKET CONNECTED · NO REAL FUNDS'); setDerivDemoBusy(false); };
+      socket.onerror = () => { setDerivDemoMessage('Demo WebSocket connection failed. Reconnect and inspect browser network diagnostics.'); setDerivDemoBusy(false); };
+      socket.onclose = () => { if (demoWs.current === socket) setDerivDemoMessage('Demo WebSocket disconnected'); };
+      setDerivDemoMessage('Connecting to verified demo account…');
+    } catch (error) {
+      setDerivDemoMessage(error instanceof Error ? error.message : 'Demo connection failed.');
+      setDerivDemoBusy(false);
+    }
+  }
+
+  async function disconnectDerivDemo() {
+    setDerivDemoBusy(true);
+    try {
+      demoWs.current?.close();
+      demoWs.current = null;
+      const response = await fetch('/api/deriv/demo/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' });
+      if (!response.ok) throw new Error('Could not disconnect Deriv.');
+      setDerivDemoConnected(false);
+      setDerivDemoAccounts([]);
+      setSelectedDemoAccountId('');
+      setDerivDemoMessage('Deriv demo account disconnected');
+    } catch (error) {
+      setDerivDemoMessage(error instanceof Error ? error.message : 'Disconnect failed.');
+    } finally { setDerivDemoBusy(false); }
+  }
+
   const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && settings.takeProfitLimit > 0 && settings.takeProfitLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
 
   function requestMarketProposal(marketSymbol: string, marketTicks?: Tick[]) {
@@ -776,6 +861,32 @@ function App() {
     {tab === 'wins' && <>
       <section className="stats-grid wins-grid">{(['DIFFERS','MATCHES','EVEN','ODD'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>{strategy} PAPER WIN RATE</span><strong>{rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>{wins} wins · {rows.length - wins} losses · {rows.length} settled</small></div>; })}</section>
       <section className="overview-grid"><div className="panel metric-card"><span>VERIFIED LIVE P/L</span><strong>—</strong><small>Unavailable: live trading is disabled.</small></div><div className="panel metric-card"><span>LIVE ACCOUNT WIN RATE</span><strong>—</strong><small>No live contracts have been executed or settled.</small></div></section>
+      <section className="panel">
+        <div className="section-heading">HISTORICAL WALK-FORWARD BACKTEST</div>
+        <p className="muted">Replays the selected market chronologically. Each decision sees only the preceding rolling window. The first 70% warms the process; the final 30% is the untouched chronological test segment.</p>
+        <div className="settings-actions">
+          <label className="setting-field">Strategy
+            <select value={backtestStrategy} onChange={event => setBacktestStrategy(event.target.value as ResearchStrategy)}>
+              <option value="DIFFERS">Differs</option><option value="MATCHES">Matches</option><option value="EVEN">Even</option><option value="ODD">Odd</option>
+            </select>
+          </label>
+          <button className="secondary-button" onClick={() => {
+            const marketTicks = ticksBySymbolRef.current.get(symbol) || [];
+            const digits = marketTicks.map(tick => Number.isInteger(tick.lastDigit) ? Number(tick.lastDigit) : digitFromQuote(tick.quote, tick.pipSize));
+            try { setBacktestResult(runWalkForwardBacktest(digits, backtestStrategy, settings.windowSize)); }
+            catch (error) { setError(error instanceof Error ? error.message : 'Backtest failed.'); }
+          }}>RUN HISTORICAL BACKTEST</button>
+        </div>
+        {backtestResult && <>
+          <div className="stats-grid wins-grid">
+            <div className="panel metric-card"><span>TEST TRADES</span><strong>{backtestResult.testTrades}</strong><small>{backtestResult.warmupTicks} warm-up ticks · {backtestResult.totalTicks} total</small></div>
+            <div className="panel metric-card"><span>TEST HIT RATE</span><strong>{backtestResult.winRate === null ? '—' : (backtestResult.winRate * 100).toFixed(2) + '%'}</strong><small>{backtestResult.wins} wins · {backtestResult.losses} losses</small></div>
+            <div className="panel metric-card"><span>THEORETICAL BASELINE</span><strong>{(backtestResult.theoreticalBaseline * 100).toFixed(1)}%</strong><small>Difference: {backtestResult.differenceFromBaseline === null ? '—' : (backtestResult.differenceFromBaseline * 100).toFixed(2) + ' pp'}</small></div>
+            <div className="panel metric-card"><span>MAX LOSS STREAK</span><strong>{backtestResult.maxConsecutiveLosses}</strong><small>{backtestResult.strategy} · {backtestResult.windowSize}-tick window</small></div>
+          </div>
+          <p className="muted">{backtestResult.note}</p>
+        </>}
+      </section>
       <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>{(['DIFFERS','MATCHES','EVEN','ODD'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>{strategy}</td><td>{rows.length}</td><td>{wins}</td><td>{rows.length-wins}</td><td>{rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
     </>}
 
@@ -843,11 +954,24 @@ function App() {
         <div className="settings-actions"><button className="secondary-button" onClick={() => setSettings(DEFAULT_SETTINGS)}>Restore defaults</button><span className="default-note">Defaults: 1.00 stake · 2.00 daily loss</span></div>
       </section>
       <section className="panel safety-panel">
-        <div className="section-heading">DERIV ACCOUNT CONNECTION</div>
+        <div className="section-heading">DERIV DEMO ACCOUNT CONNECTION</div>
         <div className="candidate-row"><span>Public market data</span><strong>{status}</strong></div>
-        <div className="candidate-row"><span>Trading account</span><strong>Not connected</strong></div>
-        <p className="muted">Account authorization is not yet enabled. Do not paste an API token into this page. The account connection will use a secure authorization flow with explicitly scoped permissions, server-side safeguards and verified account identity.</p>
-        <button className="secondary-button" disabled title="Secure Deriv authorization flow is not implemented yet">CONNECT DERIV ACCOUNT · LOCKED</button>
+        <div className="candidate-row"><span>Deriv authorization</span><strong>{derivDemoConnected ? 'CONNECTED' : 'NOT CONNECTED'}</strong></div>
+        <div className="candidate-row"><span>Demo session</span><strong>{derivDemoMessage}</strong></div>
+        <p className="muted">Connect through Deriv OAuth. Lotus requests the trade scope only, stores the access token encrypted on the server, and exposes only verified demo accounts. No API token is pasted into the browser. The real-account WebSocket endpoint is explicitly rejected.</p>
+        {!derivDemoConnected ? <button className="secondary-button" disabled={derivDemoBusy} onClick={beginDerivOAuth}>{derivDemoBusy ? 'CONNECTING…' : 'CONNECT DERIV DEMO ACCOUNT'}</button> : <>
+          <label className="setting-field">Select a verified demo account
+            <select value={selectedDemoAccountId} onChange={event => setSelectedDemoAccountId(event.target.value)}>
+              <option value="">Select demo account</option>
+              {derivDemoAccounts.map(account => <option key={account.account_id} value={account.account_id}>{account.account_id} · {account.currency || 'Currency unavailable'}{account.balance === null ? '' : ' · ' + account.balance}</option>)}
+            </select>
+          </label>
+          <div className="settings-actions">
+            <button className="secondary-button" disabled={derivDemoBusy || !selectedDemoAccountId} onClick={openDerivDemoSession}>OPEN DEMO WEBSOCKET</button>
+            <button className="secondary-button" disabled={derivDemoBusy} onClick={disconnectDerivDemo}>DISCONNECT</button>
+          </div>
+        </>}
+        <p className="muted">Connection groundwork only: this increment authenticates the demo account and opens its WebSocket. It does not yet submit demo purchases. Forward contract testing will be added as a separately gated feature after the account connection is verified.</p>
       </section>
       <section className="panel safety-panel">
         <div className="section-heading">EXECUTION SAFETY</div>
