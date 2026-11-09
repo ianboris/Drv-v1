@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import { calculateContractEconomics } from './riskCalculator';
 import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
-import CrashBoomScalper from './CrashBoomScalper';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -17,7 +16,7 @@ type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpo
 type ResearchStrategy = 'DIFFERS' | 'MATCHES' | 'EVEN' | 'ODD';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
-type Tab = 'overview' | 'scalper' | 'engine' | 'wins' | 'activity' | 'settings';
+type Tab = 'overview' | 'engine' | 'wins' | 'activity' | 'settings';
 const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, takeProfitLimit: 5, windowSize: 100, currency: '' };
 
 function readSettings(): Settings {
@@ -779,7 +778,6 @@ function App() {
 
     <nav className="tabs" aria-label="Main navigation">
       <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button>
-      <button className={tab === 'scalper' ? 'active' : ''} onClick={() => setTab('scalper')}>Crash/Boom Scalper</button>
       <button className={tab === 'engine' ? 'active' : ''} onClick={() => setTab('engine')}>Differs / Matches</button>
       <button className={tab === 'wins' ? 'active' : ''} onClick={() => setTab('wins')}>Wins</button>
       <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>Journal</button>
@@ -826,8 +824,6 @@ function App() {
       <section className="panel"><div className="panel-title"><div><div className="section-heading">CURRENT MARKET DIGIT STREAM</div><p className="muted">{marketName} · latest 60 final quote digits</p></div><span className="live-dot">LIVE FEED</span></div><div className="digits">{digits.slice(-60).map((digit,index,array)=><span key={ticks.slice(-60)[index]?.id ?? index} className={index===array.length-1?'last':''}>{digit}</span>)}</div></section>
       <section className="stats-grid"><Metric label={settings.windowSize+'-tick sample'} value={stats.sample.toString()} /><Metric label="Shannon entropy" value={stats.sample?stats.entropy.toFixed(3):'—'} /><Metric label="All-session ticks" value={digits.length.toLocaleString()} /><Metric label="Out-of-sample edge" value="Not established" /></section>
     </>}
-    {tab === 'scalper' && <CrashBoomScalper demoConnected={derivDemoConnected} demoAccountId={selectedDemoAccountId} demoCurrency={derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId)?.currency || ''} />}
-
     {tab === 'engine' && <>
       <section className="panel engine-hero">
         <div className="section-heading">LOTUS DIGIT INTELLIGENCE</div><h2>Choose a research engine</h2>
