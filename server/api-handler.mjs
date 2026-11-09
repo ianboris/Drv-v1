@@ -99,7 +99,9 @@ async function handle(request) {
         to_regclass('public.ddpe_trades') IS NOT NULL AS trades,
         to_regclass('public.ddpe_daily_risk') IS NOT NULL AS daily_risk,
         to_regclass('public.ddpe_login_limits') IS NOT NULL AS login_limits,
-        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'account_currency') AS account_currency`;
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'account_currency') AS account_currency,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_ticks' AND column_name = 'tick_uid') AS tick_identity,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_prediction_choices' AND column_name = 'choice_uid') AS choice_identity`;
       checks.schema_ready = Boolean(schema[0] && Object.values(schema[0]).every(Boolean));
     } catch (error) {
       return json({ ok: false, checks, error: "Database connection failed. Check DATABASE_URL and Neon network access." }, 503);
@@ -230,7 +232,7 @@ async function handle(request) {
       typeof choice?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(choice.symbol) ||
       !Number.isInteger(choice.barrier_digit) || choice.barrier_digit < 0 || choice.barrier_digit > 9 ||
       !Number.isSafeInteger(choice.predicted_at_epoch) || !Number.isSafeInteger(choice.settled_at_epoch) ||
-      choice.settled_at_epoch < choice.predicted_at_epoch ||
+      choice.settled_at_epoch <= choice.predicted_at_epoch ||
       !Number.isInteger(choice.outcome_digit) || choice.outcome_digit < 0 || choice.outcome_digit > 9 ||
       typeof choice.is_correct !== "boolean" ||
       !Number.isInteger(choice.analysis_window) || choice.analysis_window < 50 || choice.analysis_window > 5000)) {
