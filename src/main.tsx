@@ -16,12 +16,12 @@ type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpo
 type ResearchStrategy = 'DIFFERS' | 'MATCHES' | 'EVEN' | 'ODD';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
-type DemoDigitTrade = { contractId: string; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
+type DemoDigitTrade = { contractId: string; accountId: string; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
 type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; proposalId?: string; askPrice?: number };
 const DEMO_TRADES_KEY = 'lotus-demo-digit-trades-v1';
 const DEMO_DAILY_KEY = 'lotus-demo-digit-daily-v1';
 function readDemoTrades(): DemoDigitTrade[] { try { const value = JSON.parse(localStorage.getItem(DEMO_TRADES_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } }
-function readDemoDailyPnl(): number { try { const value = JSON.parse(localStorage.getItem(DEMO_DAILY_KEY) || '{}'); return value.day === new Date().toISOString().slice(0, 10) && Number.isFinite(value.pnl) ? value.pnl : 0; } catch { return 0; } }
+function readDemoDailyPnl(accountId: string): number { if (!accountId) return 0; try { const value = JSON.parse(localStorage.getItem(`${DEMO_DAILY_KEY}:${accountId}`) || '{}'); return value.day === new Date().toISOString().slice(0, 10) && Number.isFinite(value.pnl) ? value.pnl : 0; } catch { return 0; } }
 type Tab = 'overview' | 'engine' | 'wins' | 'activity' | 'settings';
 const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, takeProfitLimit: 5, windowSize: 100, currency: '' };
 
@@ -116,7 +116,7 @@ function App() {
   const [demoAutoTrading, setDemoAutoTrading] = useState(false);
   const [demoTradeMessage, setDemoTradeMessage] = useState('Demo execution is stopped.');
   const [demoTrades, setDemoTrades] = useState<DemoDigitTrade[]>(readDemoTrades);
-  const [demoDailyPnl, setDemoDailyPnl] = useState(readDemoDailyPnl);
+  const [demoDailyPnl, setDemoDailyPnl] = useState(0);
   const [backtestResult, setBacktestResult] = useState<WalkForwardBacktestResult | null>(null);
   const [backtestStrategy, setBacktestStrategy] = useState<ResearchStrategy>('DIFFERS');
   const [authChecking, setAuthChecking] = useState(true);
@@ -164,7 +164,15 @@ function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   useEffect(() => { demoAutoTradingRef.current = demoAutoTrading; }, [demoAutoTrading]);
-  useEffect(() => { demoDailyPnlRef.current = demoDailyPnl; try { localStorage.setItem(DEMO_DAILY_KEY, JSON.stringify({ day: new Date().toISOString().slice(0, 10), pnl: demoDailyPnl })); } catch {} }, [demoDailyPnl]);
+  useEffect(() => { demoDailyPnlRef.current = demoDailyPnl; }, [demoDailyPnl]);
+  useEffect(() => {
+    const accountTrades = demoTrades.filter(trade => trade.accountId === selectedDemoAccountId && trade.status === 'OPEN');
+    demoTradeMapRef.current = new Map(accountTrades.map(trade => [trade.contractId, trade]));
+    openDemoContractRef.current = accountTrades[0]?.contractId || null;
+    const pnl = readDemoDailyPnl(selectedDemoAccountId);
+    demoDailyPnlRef.current = pnl;
+    setDemoDailyPnl(pnl);
+  }, [selectedDemoAccountId]);
   useEffect(() => { try { localStorage.setItem(DEMO_TRADES_KEY, JSON.stringify(demoTrades.slice(-200))); } catch {} }, [demoTrades]);
 
   useEffect(() => {
@@ -700,7 +708,17 @@ function App() {
       demoWs.current?.close();
       const socket = new WebSocket(result.websocket_url);
       demoWs.current = socket;
-      socket.onopen = () => { setDerivDemoMessage('DEMO WEBSOCKET CONNECTED · NO REAL FUNDS'); setDemoSocketStatus('CONNECTED'); setDemoTradeMessage('Demo order channel ready. Start a Differs or Matches demo session from the Engine page.'); setDerivDemoBusy(false); };
+      socket.onopen = () => {
+        setDerivDemoMessage('DEMO WEBSOCKET CONNECTED · NO REAL FUNDS');
+        setDemoSocketStatus('CONNECTED');
+        setDemoTradeMessage('Demo order channel ready. Start a Differs or Matches demo session from the Engine page.');
+        setDerivDemoBusy(false);
+        demoTrades.filter(trade => trade.accountId === selectedDemoAccountId && trade.status === 'OPEN').forEach(trade => {
+          demoTradeMapRef.current.set(trade.contractId, trade);
+          openDemoContractRef.current = trade.contractId;
+          socket.send(JSON.stringify({ proposal_open_contract: 1, contract_id: Number(trade.contractId), subscribe: 1, req_id: demoRequestIdRef.current++ }));
+        });
+      };
       socket.onerror = () => { setDerivDemoMessage('Demo WebSocket connection failed. Reconnect and inspect browser network diagnostics.'); setDemoSocketStatus('ERROR'); setDemoAutoTrading(false); setDerivDemoBusy(false); };
       socket.onclose = () => { if (demoWs.current === socket) { setDerivDemoMessage('Demo WebSocket disconnected'); setDemoSocketStatus('DISCONNECTED'); setDemoAutoTrading(false); demoOrderRequestsRef.current.clear(); } };
       setDemoSocketStatus('CONNECTING');
@@ -734,7 +752,7 @@ function App() {
           const contractId = String(data.buy.contract_id || '');
           if (!/^\d+$/.test(contractId)) { setDemoTradeMessage('Deriv did not return a valid contract ID.'); return; }
           openDemoContractRef.current = contractId;
-          const trade: DemoDigitTrade = { contractId, symbol: request.symbol, strategy: request.strategy, targetDigit: request.targetDigit, stake: Number(data.buy.buy_price ?? request.askPrice ?? settingsRef.current.stake), status: 'OPEN', pnl: 0, openedAt: Date.now() };
+          const trade: DemoDigitTrade = { contractId, accountId: selectedDemoAccountId, symbol: request.symbol, strategy: request.strategy, targetDigit: request.targetDigit, stake: Number(data.buy.buy_price ?? request.askPrice ?? settingsRef.current.stake), status: 'OPEN', pnl: 0, openedAt: Date.now() };
           demoTradeMapRef.current.set(contractId, trade);
           setDemoTrades(previous => [...previous.filter(item => item.contractId !== contractId), trade].slice(-200));
           socket.send(JSON.stringify({ proposal_open_contract: 1, contract_id: Number(contractId), subscribe: 1, req_id: demoRequestIdRef.current++ }));
@@ -758,6 +776,7 @@ function App() {
               const nextDailyPnl = demoDailyPnlRef.current + profit;
               demoDailyPnlRef.current = nextDailyPnl;
               setDemoDailyPnl(nextDailyPnl);
+              try { localStorage.setItem(`${DEMO_DAILY_KEY}:${selectedDemoAccountId}`, JSON.stringify({ day: new Date().toISOString().slice(0, 10), pnl: nextDailyPnl })); } catch {}
               if (nextDailyPnl <= -settingsRef.current.dailyLossLimit) {
                 demoAutoTradingRef.current = false;
                 setDemoAutoTrading(false);
@@ -783,7 +802,6 @@ function App() {
       setDemoAutoTrading(false);
       demoSocketStatus === 'CONNECTED' && setDemoSocketStatus('DISCONNECTED');
       demoOrderRequestsRef.current.clear();
-      openDemoContractRef.current = null;
       demoWs.current?.close();
       demoWs.current = null;
       const response = await fetch('/api/deriv/demo/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' });
@@ -982,7 +1000,7 @@ function App() {
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
         <div className="table-wrap"><table><thead><tr><th>Opened</th><th>Market</th><th>Engine</th><th>Target</th><th>Stake</th><th>Status</th><th>Demo P/L</th></tr></thead><tbody>
-          {[...demoTrades].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
+          {[...demoTrades.filter(trade => trade.accountId === selectedDemoAccountId)].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
           {!demoTrades.length && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a demo execution session, choose Differs or Matches, then start the demo bot.</td></tr>}
         </tbody></table></div>
         <small className="muted">Controls: one open contract at a time, 5-second cooldown and a browser-enforced daily loss stop. The bot runs only while this dashboard remains open. These controls are demo safeguards, not server-enforced live risk controls. Even/Odd remains research-only.</small>
@@ -1094,7 +1112,7 @@ function App() {
         <p className="muted">Connect through Deriv OAuth. Lotus requests the trade scope only, stores the access token encrypted on the server, and exposes only verified demo accounts. No API token is pasted into the browser. The real-account WebSocket endpoint is explicitly rejected.</p>
         {!derivDemoConnected ? <button className="secondary-button" disabled={derivDemoBusy} onClick={beginDerivOAuth}>{derivDemoBusy ? 'CONNECTING…' : 'CONNECT DERIV DEMO ACCOUNT'}</button> : <>
           <label className="setting-field">Select a verified demo account
-            <select value={selectedDemoAccountId} disabled={demoSocketStatus === 'CONNECTED' || demoSocketStatus === 'CONNECTING'} onChange={event => setSelectedDemoAccountId(event.target.value)}>
+            <select value={selectedDemoAccountId} disabled={demoSocketStatus === 'CONNECTED' || demoSocketStatus === 'CONNECTING' || Boolean(openDemoContractRef.current)} onChange={event => setSelectedDemoAccountId(event.target.value)}>
               <option value="">Select demo account</option>
               {derivDemoAccounts.map(account => <option key={account.account_id} value={account.account_id}>{account.account_id} · {account.currency || 'Currency unavailable'}{account.balance === null ? '' : ' · ' + account.balance}</option>)}
             </select>
