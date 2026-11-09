@@ -11,7 +11,10 @@ type Settings = { stake: number; dailyLossLimit: number; windowSize: number; cur
 type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
 type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
 type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean; analysisWindow?: number };
-type Tab = 'overview' | 'activity' | 'settings';
+type ResearchStrategy = 'DIFFERS' | 'MATCHES';
+type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
+type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
+type Tab = 'overview' | 'engine' | 'wins' | 'activity' | 'settings';
 const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100, currency: '' };
 
 function readSettings(): Settings {
@@ -57,6 +60,10 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
 
 function App() {
   const [tab, setTab] = useState<Tab>('overview');
+  const [activeStrategy, setActiveStrategy] = useState<ResearchStrategy>('DIFFERS');
+  const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [liveMaster, setLiveMaster] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('lotus-theme') === 'light' ? 'light' : 'dark');
   const [symbol, setSymbol] = useState('1HZ100V');
   const [symbols, setSymbols] = useState<ActiveSymbol[]>([]);
   const [ticks, setTicks] = useState<Tick[]>([]);
@@ -73,12 +80,17 @@ function App() {
   const [saved, setSaved] = useState(true);
   const [proposalQuotes, setProposalQuotes] = useState<Record<string, ProposalQuote>>({});
   const [choiceAggregates, setChoiceAggregates] = useState<ChoiceAggregate[]>([]);
+  const [researchDecisions, setResearchDecisions] = useState<ResearchDecision[]>([]);
   const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
     try { return JSON.parse(localStorage.getItem('ddpe-choice-outcomes-v1') || '[]') as ChoiceOutcome[]; }
     catch { return []; }
   });
   const ticksRef = useRef<Tick[]>([]);
+  useEffect(() => { analysisStateRef.current = { running: analysisRunning, strategy: activeStrategy }; }, [analysisRunning, activeStrategy]);
+  useEffect(() => { try { localStorage.setItem('lotus-theme', theme); } catch {} }, [theme]);
   const pendingChoicesRef = useRef<Map<string, { id: string; symbol: string; barrier: number; predictedEpoch: number; analysisWindow: number }>>(new Map());
+  const pendingResearchRef = useRef<Map<string, PendingResearch>>(new Map());
+  const analysisStateRef = useRef<{ running: boolean; strategy: ResearchStrategy }>({ running: false, strategy: 'DIFFERS' });
   const ticksBySymbolRef = useRef<Map<string, Tick[]>>(new Map());
   const pipSizesBySymbolRef = useRef<Map<string, number>>(new Map());
   const selectedSymbolRef = useRef(symbol);
@@ -277,6 +289,14 @@ function App() {
                     tick_uid: tick.id, symbol: marketSymbol, epoch, quote,
                     pip_size: tick.pipSize, last_digit: tick.lastDigit,
                   });
+                  for (const [researchKey, pendingResearch] of pendingResearchRef.current) {
+                    if (pendingResearch.symbol !== marketSymbol) continue;
+                    const isCorrect = pendingResearch.strategy === 'DIFFERS' ? tick.lastDigit !== pendingResearch.target_digit : tick.lastDigit === pendingResearch.target_digit;
+                    const settled: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy: pendingResearch.strategy, targetDigit: pendingResearch.target_digit, predictedEpoch: pendingResearch.predicted_at_epoch, settledEpoch: epoch, outcomeDigit: tick.lastDigit, correct: isCorrect, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
+                    setResearchDecisions(previous => [...previous.filter(item => item.id !== settled.id), settled].slice(-2000));
+                    fetch('/api/research', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decisions: [{ ...pendingResearch, settled_at_epoch: epoch, outcome_digit: tick.lastDigit, is_correct: isCorrect }] }) }).then(response => { if (!response.ok) throw new Error('Research journal settlement failed'); }).catch(() => setBackendStatus('Research journal sync failed'));
+                    pendingResearchRef.current.delete(researchKey);
+                  }
                   const pending = pendingChoicesRef.current.get(marketSymbol);
                   if (pending) {
                     const outcome: ChoiceOutcome = {
@@ -320,6 +340,19 @@ function App() {
                   }
                   const priorDigits = currentTicks.slice(-windowSizeRef.current).map((item) =>
                     item.lastDigit ?? digitFromQuote(item.quote, tickPipSize));
+                  if (priorDigits.length >= windowSizeRef.current && analysisStateRef.current.running) {
+                    const priorStats = getStats(priorDigits);
+                    const strategy = analysisStateRef.current.strategy;
+                    const targetDigit = strategy === 'DIFFERS' ? priorStats.barrier : priorStats.counts.indexOf(Math.max(...priorStats.counts));
+                    if (targetDigit >= 0) {
+                      const empiricalRate = strategy === 'DIFFERS' ? 1 - priorStats.probabilities[targetDigit] : priorStats.probabilities[targetDigit];
+                      const pendingResearch: PendingResearch = { decision_uid: crypto.randomUUID(), symbol: marketSymbol, strategy, target_digit: targetDigit, predicted_at_epoch: epoch, analysis_window: windowSizeRef.current, sample_size: priorStats.sample, empirical_rate: Number(empiricalRate.toFixed(6)), model_version: 'frequency-baseline-v1' };
+                      pendingResearchRef.current.set(marketSymbol + ':' + strategy, pendingResearch);
+                      const openDecision: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy, targetDigit, predictedEpoch: epoch, settledEpoch: null, outcomeDigit: null, correct: null, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
+                      setResearchDecisions(previous => [...previous.filter(item => item.id !== openDecision.id), openDecision].slice(-2000));
+                      fetch('/api/research', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decisions: [{ ...pendingResearch, settled_at_epoch: null, outcome_digit: null, is_correct: null }] }) }).then(response => { if (!response.ok) throw new Error('Research decision persistence failed'); }).catch(() => setBackendStatus('Research journal persistence failed'));
+                    }
+                  }
                   if (priorDigits.length >= windowSizeRef.current) {
                     const priorStats = getStats(priorDigits);
                     if (priorStats.barrier >= 0) {
@@ -444,6 +477,13 @@ function App() {
       }
     }, 5000);
     return () => window.clearInterval(timer);
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let active = true;
+    fetch('/api/research', { credentials: 'same-origin', cache: 'no-store' }).then(async response => { if (!response.ok) throw new Error('Research journal unavailable'); return response.json(); }).then(data => { if (active && Array.isArray(data.decisions)) setResearchDecisions(data.decisions); }).catch(() => { if (active) setBackendStatus('Research journal unavailable'); });
+    return () => { active = false; };
   }, [authenticated]);
 
   useEffect(() => {
@@ -583,16 +623,18 @@ function App() {
   };
 
   if (authChecking) return <main className="login-shell"><section className="panel login-panel"><div className="eyebrow">LOTUS PRIVATE ACCESS</div><h1>Checking secure session</h1><p className="muted">{backendStatus}</p></section></main>;
-  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="eyebrow">LOTUS PRIVATE ACCESS</div><h1>Sign in</h1><p className="muted">Use the private app password configured in your deployment's environment variables. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
+  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="lotus-mark" aria-hidden="true"><svg viewBox="0 0 180 110"><path d="M90 96C57 76 51 47 90 9C129 47 123 76 90 96Z"/><path d="M90 96C38 88 17 64 28 35C61 43 82 63 90 96Z"/><path d="M90 96C142 88 163 64 152 35C119 43 98 63 90 96Z"/><path d="M90 96C73 65 76 37 90 18C104 37 107 65 90 96Z"/></svg></div><div className="eyebrow">WELCOME TO</div><h1>LOTUS</h1><p className="muted">Deriv digit intelligence · research first</p><p className="muted">Use the private app password configured in your deployment's environment variables. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
 
-  return <main>
+  return <main className={theme === 'light' ? 'theme-light' : 'theme-dark'}>
     <header className="topbar">
       <div><div className="eyebrow">LOTUS · DERIV RESEARCH</div><h1>Lotus</h1><p className="subhead">Deriv digit intelligence · research first</p></div>
-      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span><button className="secondary-button" onClick={logout}>Sign out</button></div>
+      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
       <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button>
+      <button className={tab === 'engine' ? 'active' : ''} onClick={() => setTab('engine')}>Differs / Matches</button>
+      <button className={tab === 'wins' ? 'active' : ''} onClick={() => setTab('wins')}>Wins</button>
       <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>Journal</button>
       <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Settings</button>
     </nav>
@@ -659,6 +701,39 @@ function App() {
       </section>
     </>}
 
+    {tab === 'engine' && <>
+      <section className="panel engine-hero">
+        <div className="section-heading">LOTUS DIGIT INTELLIGENCE</div><h2>Choose a research engine</h2>
+        <p className="muted">Both engines score the next observed tick. These are frequency baselines, not proven predictive edges.</p>
+        <div className="strategy-switch">
+          <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
+          <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
+        </div>
+        <div className="research-signal">
+          <span className="section-heading">{activeStrategy} · ${marketName}</span>
+          <div className="signal-digit">${activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—')}</div>
+          <div className="signal-label">TARGET DIGIT</div>
+          <div className="candidate-row"><span>Observed baseline success rate</span><strong>${stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100).toFixed(2) + '%' : '—'}</strong></div>
+          <div className="candidate-row"><span>Historical sample</span><strong>${stats.sample} / ${settings.windowSize}</strong></div>
+          <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
+          <p className="muted">Differs selects the least frequent digit; Matches selects the most frequent. These choices are descriptive baselines, can overfit noise, and do not mean any digit is due.</p>
+        </div>
+        <div className="control-row research-controls">
+          <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START ${activeStrategy} ANALYSIS</button>
+          <button className="stop-button" onClick={() => setAnalysisRunning(false)} disabled={!analysisRunning}>STOP ANALYSIS</button>
+        </div>
+        <small className="lock-note">${analysisRunning ? activeStrategy + ' paper research running · no Deriv orders sent' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
+      </section>
+      <section className="panel"><div className="section-heading">LIVE TRADING MASTER SWITCH</div><div className="master-row"><div><strong>Live execution</strong><p className="muted">Locked pending account authorization, verified settlement reconciliation and server-enforced risk controls.</p></div><button className="master-switch" disabled aria-pressed={liveMaster}>OFF · LOCKED</button></div></section>
+      <section className="panel"><div className="section-heading">CROSS-MARKET RESEARCH</div><p className="muted">Public market ticks are collected while this dashboard is open. Closing the browser stops the live collector in this version.</p><div className="candidate-row"><span>Markets subscribed</span><strong>${symbols.length}</strong></div><div className="candidate-row"><span>Live tick stream</span><strong>${status}</strong></div><div className="candidate-row"><span>Persisted research decisions</span><strong>${researchDecisions.length}</strong></div></section>
+    </>}
+
+    {tab === 'wins' && <>
+      <section className="stats-grid wins-grid">${(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>${strategy} PAPER WIN RATE</span><strong>${rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>${wins} wins · ${rows.length - wins} losses · ${rows.length} settled</small></div>; })}</section>
+      <section className="overview-grid"><div className="panel metric-card"><span>VERIFIED LIVE P/L</span><strong>—</strong><small>Unavailable: live trading is disabled.</small></div><div className="panel metric-card"><span>LIVE ACCOUNT WIN RATE</span><strong>—</strong><small>No live contracts have been executed or settled.</small></div></section>
+      <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>${(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>${strategy}</td><td>${rows.length}</td><td>${wins}</td><td>${rows.length-wins}</td><td>${rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
+    </>}
+
     {tab === 'activity' && <>
       <section className="accuracy-strip" aria-live="polite">
         <div><span className="section-heading">LIVE CHOICE ACCURACY</span><small>One-tick paper outcomes · {symbol}</small></div>
@@ -676,6 +751,14 @@ function App() {
         <div className="table-wrap"><table><thead><tr><th>Time (UTC)</th><th>Quote</th><th>Last digit</th></tr></thead><tbody>
           {ticks.slice(-25).reverse().map((tick) => <tr key={tick.id}><td>{new Date(tick.epoch * 1000).toLocaleTimeString()}</td><td>{tick.quote}</td><td>{digitFromQuote(tick.quote, pipSize)}</td></tr>)}
           {!ticks.length && <tr><td colSpan={3} className="empty">Waiting for tick data…</td></tr>}
+        </tbody></table></div>
+      </section>
+      <section className="panel">
+        <div className="section-heading">DIFFERS / MATCHES RESEARCH JOURNAL</div>
+        <p className="muted">Each decision is saved before its next-tick result is known, then updated when the next tick arrives. Unresolved decisions remain pending if the feed disconnects.</p>
+        <div className="table-wrap"><table><thead><tr><th>Predicted (UTC)</th><th>Market</th><th>Engine</th><th>Target</th><th>Next digit</th><th>Empirical rate</th><th>Result</th></tr></thead><tbody>
+          {researchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
+          {!researchDecisions.length && <tr><td colSpan={7} className="empty">No research decisions yet. Start either engine after a full analysis window has loaded.</td></tr>}
         </tbody></table></div>
       </section>
       <section className="panel">
@@ -721,7 +804,7 @@ function App() {
       </section>
     </>}
 
-    <footer>Lotus private research interface · {backendStatus} · no order execution in this build</footer>
+    <footer>LOTUS ENGINE · {status === 'CONNECTED' ? 'LIVE MARKET DATA' : 'HISTORICAL MODE'} · EXECUTION LOCKED · {backendStatus}</footer>
   </main>;
 }
 
