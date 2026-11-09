@@ -15,6 +15,7 @@ on:
       - feature/secure-neon-backend
       - deploy/vercel-neon-adapter
       - fix/ddpe-runtime-data-integrity
+      - fix/vercel-only-neon-backend
 
 jobs:
   build:
@@ -28,8 +29,8 @@ jobs:
           node-version: 20
       - name: Install dependencies
         run: npm install
-      - name: Check backend function syntax
-        run: node --check netlify/functions/api.mjs
+      - name: Check Vercel backend function syntax
+        run: node --check server/api-handler.mjs && node --check 'api/[...path].mjs'
       - name: Run API smoke tests
         run: node --test tests/api.test.mjs
       - name: Run TypeScript and Vite production build
