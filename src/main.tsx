@@ -796,6 +796,7 @@ function App() {
   }
 
   async function disconnectDerivDemo() {
+    if (openDemoContractRef.current || demoOrderRequestsRef.current.size) { setDemoTradeMessage('Wait for pending orders and the open one-tick contract to settle before disconnecting.'); return; }
     setDerivDemoBusy(true);
     try {
       demoAutoTradingRef.current = false;
@@ -965,10 +966,10 @@ function App() {
         <div className="section-heading">LOTUS DIGIT INTELLIGENCE</div><h2>Choose a research engine</h2>
         <p className="muted">Both engines score the next observed tick. These are frequency baselines, not proven predictive edges.</p>
         <div className="strategy-switch">
-          <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
-          <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
-          <button className={activeStrategy === 'EVEN' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('EVEN'); setAnalysisRunning(false); }}>EVEN<small>Next digit is even</small></button>
-          <button className={activeStrategy === 'ODD' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('ODD'); setAnalysisRunning(false); }}>ODD<small>Next digit is odd</small></button>
+          <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
+          <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
+          <button className={activeStrategy === 'EVEN' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('EVEN'); setAnalysisRunning(false); }}>EVEN<small>Next digit is even</small></button>
+          <button className={activeStrategy === 'ODD' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('ODD'); setAnalysisRunning(false); }}>ODD<small>Next digit is odd</small></button>
         </div>
         <div className="research-signal">
           <span className="section-heading">{activeStrategy} · {marketName}</span>
@@ -986,7 +987,7 @@ function App() {
         <small className="lock-note">{analysisRunning ? activeStrategy + ' paper research running' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
       </section>
       <section className="panel demo-execution-panel">
-        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick Differs / Matches demo contracts through the authenticated Deriv demo WebSocket. Real accounts are not supported.</p></div><span className="execution-lock">DEMO ONLY</span></div>
+        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick Differs / Matches demo contracts through the authenticated Deriv demo WebSocket. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
         <div className="candidate-row"><span>Selected demo account</span><strong>{selectedDemoAccountId || 'Not selected'}</strong></div>
         <div className="candidate-row"><span>Demo currency</span><strong>{demoCurrency || 'Unavailable'}</strong></div>
         <div className="candidate-row"><span>Execution socket</span><strong>{demoSocketStatus}</strong></div>
@@ -994,10 +995,10 @@ function App() {
         <div className="candidate-row"><span>Stake per contract</span><strong>{settings.stake.toFixed(2)} {demoCurrency}</strong></div>
         <div className="candidate-row"><span>Realized demo P/L today</span><strong>{demoDailyPnl.toFixed(2)} {demoCurrency}</strong></div>
         <div className="candidate-row"><span>Daily loss stop</span><strong>{settings.dailyLossLimit.toFixed(2)} {demoCurrency}</strong></div>
-        <div className="scalper-actions">
+        <div className="demo-execution-actions">
           <button className="secondary-button" disabled={!derivDemoConnected || !selectedDemoAccountId || demoSocketStatus === 'CONNECTING' || demoSocketStatus === 'CONNECTED' || derivDemoBusy} onClick={openDerivDemoSession}>CONNECT DEMO EXECUTION</button>
-          <button className="start-button" disabled={demoAutoTrading || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Waiting for the next live tick and a fresh Deriv quote.`); }}>START DEMO BOT</button>
-          <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
+          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Waiting for the next live tick and a fresh Deriv quote.`); }}>START DEMO BOT</button>
+          <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; for (const [id, request] of demoOrderRequestsRef.current) if (request.kind === 'proposal') demoOrderRequestsRef.current.delete(id); setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any submitted buy or open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
         <div className="table-wrap"><table><thead><tr><th>Opened</th><th>Market</th><th>Engine</th><th>Target</th><th>Stake</th><th>Status</th><th>Demo P/L</th></tr></thead><tbody>
