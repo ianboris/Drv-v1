@@ -96,3 +96,24 @@ th{color:#c2a5e8}
  .research-controls{display:grid;grid-template-columns:1fr 1fr}
 }
 @media(max-width:380px){.tabs button{font-size:10px;padding:9px 3px}}
+
+/* Operational mode, empirical score meter, and account/risk controls */
+.mode-banner{display:flex;align-items:center;gap:10px;padding:11px 14px;margin:0 0 14px;border:1px solid #514331;border-radius:12px;background:#211b15}
+.mode-banner>div{display:grid;gap:3px;flex:1}
+.mode-banner strong{font:800 10px ui-monospace,monospace;letter-spacing:.15em;color:#e8d6b2}
+.mode-banner small{font:600 9px ui-monospace,monospace;letter-spacing:.08em;color:#b9a88c}
+.mode-light{width:8px;height:8px;border-radius:50%;background:#c69b4c;box-shadow:0 0 12px #c69b4c77}
+.mode-light.active{background:#9bd3ac;box-shadow:0 0 12px #9bd3ac77}
+.execution-lock{font:800 9px ui-monospace,monospace;color:#f1aeb8;letter-spacing:.08em}
+.confidence-track{height:5px;max-width:260px;margin:0 auto 18px;border-radius:99px;background:#3a3142;overflow:hidden}
+.confidence-track i{display:block;height:100%;border-radius:99px;background:#b89ad8}
+.master-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.account-status{border-color:#594b32;background:#241d12;color:#ecd49a}
+body[data-theme="light"]{background:#f4f4f8}
+body[data-theme="light"] .theme-light{background:#f4f4f8}
+.theme-light .mode-banner{background:#fbf7ee;border-color:#e7dcc4}
+.theme-light .mode-banner strong{color:#6e5632}
+.theme-light .mode-banner small{color:#887655}
+.theme-light .execution-lock{color:#a13d50}
+.theme-light .confidence-track{background:#e8e0ed}
+@media(max-width:620px){.mode-banner{align-items:flex-start}.execution-lock{font-size:8px}.master-actions{width:100%}.master-actions>*{flex:1}}
