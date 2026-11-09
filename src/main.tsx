@@ -4,7 +4,7 @@ import './style.css';
 
 const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim();
 // Deriv's legacy WebSocket app_id is the numeric ID assigned to a registered application.
-const DERIV_APP_ID_VALID = /^\\d+$/.test(DERIV_APP_ID);
+const DERIV_APP_ID_VALID = /^\d+$/.test(DERIV_APP_ID);
 const WS = DERIV_APP_ID_VALID
   ? `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`
   : '';
