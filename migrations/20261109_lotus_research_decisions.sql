@@ -1,3 +1,6 @@
+ALTER TABLE public.ddpe_settings
+  ADD COLUMN IF NOT EXISTS take_profit_limit numeric(12,2) NOT NULL DEFAULT 5;
+
 CREATE TABLE IF NOT EXISTS public.ddpe_research_decisions (
   id bigserial PRIMARY KEY,
   owner_id text NOT NULL,
