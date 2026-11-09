@@ -290,7 +290,7 @@ async function handle(request) {
     if (!decisions.length || decisions.length > 100 || decisions.some((item) =>
       typeof item?.decision_uid !== "string" || item.decision_uid.length < 8 || item.decision_uid.length > 160 ||
       typeof item?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(item.symbol) ||
-      !["DIFFERS", "MATCHES"].includes(item.strategy) ||
+      !["DIFFERS", "MATCHES", "EVEN", "ODD"].includes(item.strategy) ||
       !Number.isInteger(item.target_digit) || item.target_digit < 0 || item.target_digit > 9 ||
       !Number.isSafeInteger(item.predicted_at_epoch) ||
       (item.settled_at_epoch != null && (!Number.isSafeInteger(item.settled_at_epoch) || item.settled_at_epoch <= item.predicted_at_epoch)) ||
