@@ -4,7 +4,7 @@ Mobile-first Vite + React + TypeScript research console with a Vercel Node.js AP
 
 ## Runtime and deployment
 
-This repository deploys to **Vercel only**. Netlify configuration and function code have been removed.
+This repository deploys exclusively to Vercel.
 
 - Framework preset: Vite
 - Build command: `npm run build`
