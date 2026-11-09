@@ -58,6 +58,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
   const demoSocket = useRef<WebSocket | null>(null);
   const marketsRef = useRef<Map<string, Market>>(new Map());
   const proposalRequests = useRef<Map<number, {symbol:string;direction:'MULTUP'|'MULTDOWN'}>>(new Map());
+  const contractRequests = useRef<Map<number, string>>(new Map());
   const requestId = useRef(5000);
   const openTradeId = useRef<string | null>(null);
   const botRef = useRef(false);
@@ -118,6 +119,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
           marketsRef.current.set(symbol, { symbol, name: item.underlying_symbol_name || symbol, supported: null, contracts: [], ticks: [], last: null, updatedAt: null });
           window.setTimeout(() => {
             if (socket.readyState !== WebSocket.OPEN) return;
+            contractRequests.current.set(100 + index, symbol);
             socket.send(JSON.stringify({ contracts_for: symbol, req_id: 100 + index }));
             socket.send(JSON.stringify({ ticks_history: symbol, count: 120, end: 'latest', style: 'ticks', req_id: 1000 + index }));
             socket.send(JSON.stringify({ ticks: symbol, subscribe: 1, req_id: 2000 + index }));
@@ -127,7 +129,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
         setScanState('VERIFYING CONTRACTS');
       }
       if (data.msg_type === 'contracts_for') {
-        const symbol = String(data.echo_req?.contracts_for || data.passthrough?.symbol || '');
+        const symbol = contractRequests.current.get(Number(data.req_id)) || String(data.echo_req?.contracts_for || data.passthrough?.symbol || '');\n        contractRequests.current.delete(Number(data.req_id));
         if (!symbol || !marketsRef.current.has(symbol)) return;
         const types = Array.from(getContractTypes(data.contracts || data));
         const supported = types.includes('MULTUP') || types.includes('MULTDOWN');
@@ -276,7 +278,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
         <label className="setting-field">Crash / Boom instrument
           <select value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Select verified instrument</option>{eligible.map(m=><option key={m.symbol} value={m.symbol}>{m.name} · {m.symbol}</option>)}</select>
         </label>
-        <div className="candidate-row"><span>Current trigger</span><strong>{signal || 'No trigger'}</strong></div>
+        <div className="candidate-row"><span>Current trigger</span><strong>{signal || 'No trigger'}</strong></div><div className="candidate-row"><span>Latest scanner signal</span><strong>{lastSignal}</strong></div>
         <div className="candidate-row"><span>Demo stake / multiplier</span><strong>{STAKE.toFixed(2)} · {MULTIPLIER}x</strong></div>
         <div className="candidate-row"><span>Per-contract TP / SL</span><strong>{TAKE_PROFIT.toFixed(2)} / {STOP_LOSS.toFixed(2)}</strong></div>
         <div className="candidate-row"><span>Cooldown</span><strong>60 seconds</strong></div>
