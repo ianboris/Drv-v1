@@ -735,7 +735,7 @@ function App() {
           const request = demoOrderRequestsRef.current.get(reqId);
           if (!request || request.kind !== 'proposal') return;
           demoOrderRequestsRef.current.delete(reqId);
-          if (!demoAutoTradingRef.current || openDemoContractRef.current || demoDailyPnlRef.current <= -settingsRef.current.dailyLossLimit) { setDemoTradeMessage('Demo purchase cancelled because the bot was stopped or its loss limit was reached.'); return; }
+          if (!demoAutoTradingRef.current || openDemoContractRef.current || demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { setDemoTradeMessage('Demo purchase cancelled because the bot was stopped or the next full stake would exceed the daily loss limit.'); return; }
           const proposalId = String(data.proposal.id || '');
           const askPrice = Number(data.proposal.ask_price);
           if (!proposalId || !Number.isFinite(askPrice) || askPrice <= 0) { setDemoTradeMessage('Deriv returned an invalid demo proposal; no purchase was sent.'); return; }
@@ -823,7 +823,7 @@ function App() {
     if (marketSymbol !== selectedSymbolRef.current || (strategy !== 'DIFFERS' && strategy !== 'MATCHES')) return;
     if (!demoCurrency) { setDemoTradeMessage('Select a verified demo account with a known currency before trading.'); return; }
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
-    if (demoDailyPnlRef.current <= -settingsRef.current.dailyLossLimit) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Demo daily loss limit reached. Bot stopped.'); return; }
+    if (demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Another full stake would exceed the daily loss limit. Bot stopped before requesting a quote.'); return; }
     if (Date.now() - demoLastOrderAtRef.current < 5000) return;
     if (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9) return;
     demoLastOrderAtRef.current = Date.now();
@@ -995,7 +995,7 @@ function App() {
         <div className="candidate-row"><span>Daily loss stop</span><strong>{settings.dailyLossLimit.toFixed(2)} {demoCurrency}</strong></div>
         <div className="scalper-actions">
           <button className="secondary-button" disabled={!derivDemoConnected || !selectedDemoAccountId || demoSocketStatus === 'CONNECTING' || demoSocketStatus === 'CONNECTED' || derivDemoBusy} onClick={openDerivDemoSession}>CONNECT DEMO EXECUTION</button>
-          <button className="start-button" disabled={demoAutoTrading || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl <= -settings.dailyLossLimit} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Waiting for the next live tick and a fresh Deriv quote.`); }}>START DEMO BOT</button>
+          <button className="start-button" disabled={demoAutoTrading || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Waiting for the next live tick and a fresh Deriv quote.`); }}>START DEMO BOT</button>
           <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
