@@ -618,6 +618,8 @@ function App() {
   const highestWinRateMarket = scannerRows.filter((row) => row.total >= 100 && row.winRate !== null).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1))[0] || null;
   const differsEstimate = stats.sample ? (1 - stats.barrierRate) * 100 : 0;
   const symbolOutcomes = choiceOutcomes.filter((item) => item.symbol === symbol);
+  // The journal is scoped to the currently selected market. Historical records from other symbols remain in storage for research, but are not mixed into this market's journal view.
+  const marketResearchDecisions = researchDecisions.filter((item) => item.symbol === symbol);
   const settledCorrect = symbolOutcomes.filter((item) => item.correct).length;
   const settledAccuracy = symbolOutcomes.length ? settledCorrect / symbolOutcomes.length * 100 : null;
   const changeSetting = (key: keyof Settings, value: number | string) => {
@@ -751,7 +753,7 @@ function App() {
   return <main className={theme === 'light' ? 'theme-light' : 'theme-dark'}>
     <header className="topbar">
       <div><div className="eyebrow">LOTUS · DERIV RESEARCH</div><h1>Lotus</h1><p className="subhead">Deriv digit intelligence · research first</p></div>
-      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />MARKET {status}</span><span className="status account-status">ACCOUNT NOT LINKED</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
+      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />MARKET {status}</span><span className={derivDemoConnected ? "status online account-status" : "status account-status"}><i />{derivDemoConnected ? "DERIV AUTHORIZED · DEMO" : "DEMO ACCOUNT NOT LINKED"}</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
@@ -910,11 +912,11 @@ function App() {
         </tbody></table></div>
       </section>
       <section className="panel">
-        <div className="section-heading">FOUR-ENGINE RESEARCH JOURNAL</div>
+        <div className="panel-title journal-toolbar"><div><div className="section-heading">FOUR-ENGINE RESEARCH JOURNAL · {marketName}</div><p className="muted">Only this selected market is shown. Decisions from other symbols are kept separate.</p></div><label className="journal-market-filter">Market<select value={symbol} onChange={(event) => selectSymbol(event.target.value)}>{symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}</select></label></div>
         <p className="muted">Each decision is saved before its next-tick result is known, then updated when the next tick arrives. Unresolved decisions remain pending if the feed disconnects.</p>
         <div className="table-wrap"><table><thead><tr><th>Predicted (UTC)</th><th>Market</th><th>Engine</th><th>Target</th><th>Next digit</th><th>Empirical rate</th><th>Result</th></tr></thead><tbody>
-          {researchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.strategy === 'EVEN' ? 'Even' : item.strategy === 'ODD' ? 'Odd' : item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
-          {!researchDecisions.length && <tr><td colSpan={7} className="empty">No research decisions yet. Start an engine after a full analysis window has loaded.</td></tr>}
+          {marketResearchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.strategy === 'EVEN' ? 'Even' : item.strategy === 'ODD' ? 'Odd' : item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
+          {!marketResearchDecisions.length && <tr><td colSpan={7} className="empty">No journal entries for this market yet. Start one of the four research engines on this market after a full analysis window has loaded.</td></tr>}
         </tbody></table></div>
       </section>
       <section className="panel">
