@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
+import { calculateContractEconomics } from './riskCalculator';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -575,7 +576,7 @@ function App() {
     const matchedWins = matched?.wins ?? 0;
     const matchedWinRate = matchedSample ? matchedWins / matchedSample : null;
     const conservativeWinRate = matchedSample ? wilsonLowerBound(matchedWins, matchedSample) : null;
-    const conservativeEv = quote && matchedSample >= 100 && conservativeWinRate !== null ? conservativeWinRate * quote.payout - quote.askPrice : null;
+    const conservativeEv = quote && matchedSample >= 100 && conservativeWinRate !== null ? calculateContractEconomics({ stake: quote.askPrice, payout: quote.payout, estimatedWinProbability: conservativeWinRate }).expectedValue : null;
     return { symbol: item.underlying_symbol, name: item.underlying_symbol_name || item.underlying_symbol, total, wins, winRate, matchedSample, matchedWinRate, conservativeWinRate, quote, conservativeEv };
   }).sort((a, b) => (b.conservativeEv ?? -Infinity) - (a.conservativeEv ?? -Infinity)), [symbols, choiceAggregates, proposalQuotes]);
   const qualifiedMarkets = scannerRows.filter((row) => row.matchedSample >= 100 && row.quote && row.conservativeEv !== null && row.conservativeEv > 0);
