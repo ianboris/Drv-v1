@@ -85,6 +85,7 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
 }
 
 function App() {
+  useEffect(() => { if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined); }, []);
   const [tab, setTab] = useState<Tab>('overview');
   const [activeStrategy, setActiveStrategy] = useState<ResearchStrategy>('DIFFERS');
   const [analysisRunning, setAnalysisRunning] = useState(false);
