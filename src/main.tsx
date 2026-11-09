@@ -3,7 +3,9 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim();
-const WS = DERIV_APP_ID
+// Deriv's legacy WebSocket app_id is the numeric ID assigned to a registered application.
+const DERIV_APP_ID_VALID = /^\d+$/.test(DERIV_APP_ID);
+const WS = DERIV_APP_ID_VALID
   ? `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`
   : '';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
@@ -97,9 +99,9 @@ function App() {
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
-    if (!DERIV_APP_ID) {
+    if (!DERIV_APP_ID_VALID) {
       setStatus('CONFIGURATION REQUIRED');
-      setError('Deriv connection is disabled. Set VITE_DERIV_APP_ID in Vercel and redeploy.');
+      setError(DERIV_APP_ID ? 'Deriv connection is disabled. VITE_DERIV_APP_ID must be the numeric ID of an application registered with Deriv.' : 'Deriv connection is disabled. Set VITE_DERIV_APP_ID to your registered numeric Deriv application ID in Vercel and redeploy.');
       return;
     }
     ticksBySymbolRef.current.clear();
@@ -120,7 +122,7 @@ function App() {
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
-      console.info('[DERIV] Opening WebSocket connection', { endpoint: 'wss://ws.derivws.com/websockets/v3', appIdConfigured: Boolean(DERIV_APP_ID) });
+      console.info('[DERIV] Opening WebSocket connection', { endpoint: 'wss://ws.derivws.com/websockets/v3', appIdConfigured: DERIV_APP_ID_VALID });
       socket = new WebSocket(WS);
       ws.current = socket;
       socket.onopen = () => {
