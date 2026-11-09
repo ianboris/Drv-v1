@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
+import { calculateContractEconomics } from './riskCalculator';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -11,7 +12,7 @@ type Settings = { stake: number; dailyLossLimit: number; takeProfitLimit: number
 type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
 type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
 type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean; analysisWindow?: number };
-type ResearchStrategy = 'DIFFERS' | 'MATCHES';
+type ResearchStrategy = 'DIFFERS' | 'MATCHES' | 'EVEN' | 'ODD';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
 type Tab = 'overview' | 'engine' | 'wins' | 'activity' | 'settings';
@@ -180,7 +181,7 @@ function App() {
         }, 30000);
         // Ask Deriv for underlyings supporting either digit contract family.
         // The current API no longer accepts product_type on active_symbols.
-        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF', 'DIGITMATCH'], req_id: 1 }));
+        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF', 'DIGITMATCH', 'DIGITEVEN', 'DIGITODD'], req_id: 1 }));
       };
       socket.onmessage = (event) => {
         if (!alive) return;
@@ -319,7 +320,7 @@ function App() {
                   });
                   for (const [researchKey, pendingResearch] of pendingResearchRef.current) {
                     if (pendingResearch.symbol !== marketSymbol) continue;
-                    const isCorrect = pendingResearch.strategy === 'DIFFERS' ? tick.lastDigit !== pendingResearch.target_digit : tick.lastDigit === pendingResearch.target_digit;
+                    const isCorrect = pendingResearch.strategy === 'DIFFERS' ? tick.lastDigit !== pendingResearch.target_digit : pendingResearch.strategy === 'MATCHES' ? tick.lastDigit === pendingResearch.target_digit : pendingResearch.strategy === 'EVEN' ? tick.lastDigit % 2 === 0 : tick.lastDigit % 2 === 1;
                     const settled: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy: pendingResearch.strategy, targetDigit: pendingResearch.target_digit, predictedEpoch: pendingResearch.predicted_at_epoch, settledEpoch: epoch, outcomeDigit: tick.lastDigit, correct: isCorrect, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
                     setResearchDecisions(previous => [...previous.filter(item => item.id !== settled.id), settled].slice(-2000));
                     queueResearchDecision({ ...pendingResearch, settled_at_epoch: epoch, outcome_digit: tick.lastDigit, is_correct: isCorrect }).then(() => setBackendStatus('Research settlement queued for sync')).catch(() => setBackendStatus('Research journal queued for sync'));
@@ -371,9 +372,9 @@ function App() {
                   if (priorDigits.length >= windowSizeRef.current && analysisStateRef.current.running) {
                     const priorStats = getStats(priorDigits);
                     const strategy = analysisStateRef.current.strategy;
-                    const targetDigit = strategy === 'DIFFERS' ? priorStats.barrier : priorStats.counts.indexOf(Math.max(...priorStats.counts));
+                    const targetDigit = strategy === 'DIFFERS' ? priorStats.barrier : strategy === 'MATCHES' ? priorStats.counts.indexOf(Math.max(...priorStats.counts)) : strategy === 'EVEN' ? 0 : 1;
                     if (targetDigit >= 0) {
-                      const empiricalRate = strategy === 'DIFFERS' ? 1 - priorStats.probabilities[targetDigit] : priorStats.probabilities[targetDigit];
+                      const empiricalRate = strategy === 'DIFFERS' ? 1 - priorStats.probabilities[targetDigit] : strategy === 'MATCHES' ? priorStats.probabilities[targetDigit] : priorDigits.filter(digit => strategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / priorDigits.length;
                       const pendingResearch: PendingResearch = { decision_uid: crypto.randomUUID(), symbol: marketSymbol, strategy, target_digit: targetDigit, predicted_at_epoch: epoch, analysis_window: windowSizeRef.current, sample_size: priorStats.sample, empirical_rate: Number(empiricalRate.toFixed(6)), model_version: 'frequency-baseline-v1' };
                       pendingResearchRef.current.set(marketSymbol + ':' + strategy, pendingResearch);
                       const openDecision: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy, targetDigit, predictedEpoch: epoch, settledEpoch: null, outcomeDigit: null, correct: null, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
@@ -575,7 +576,7 @@ function App() {
     const matchedWins = matched?.wins ?? 0;
     const matchedWinRate = matchedSample ? matchedWins / matchedSample : null;
     const conservativeWinRate = matchedSample ? wilsonLowerBound(matchedWins, matchedSample) : null;
-    const conservativeEv = quote && matchedSample >= 100 && conservativeWinRate !== null ? conservativeWinRate * quote.payout - quote.askPrice : null;
+    const conservativeEv = quote && matchedSample >= 100 && conservativeWinRate !== null ? calculateContractEconomics({ stake: quote.askPrice, payout: quote.payout, estimatedWinProbability: conservativeWinRate }).expectedValue : null;
     return { symbol: item.underlying_symbol, name: item.underlying_symbol_name || item.underlying_symbol, total, wins, winRate, matchedSample, matchedWinRate, conservativeWinRate, quote, conservativeEv };
   }).sort((a, b) => (b.conservativeEv ?? -Infinity) - (a.conservativeEv ?? -Infinity)), [symbols, choiceAggregates, proposalQuotes]);
   const qualifiedMarkets = scannerRows.filter((row) => row.matchedSample >= 100 && row.quote && row.conservativeEv !== null && row.conservativeEv > 0);
@@ -750,15 +751,17 @@ function App() {
         <div className="strategy-switch">
           <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
           <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
+          <button className={activeStrategy === 'EVEN' ? 'selected' : ''} onClick={() => { setActiveStrategy('EVEN'); setAnalysisRunning(false); }}>EVEN<small>Next digit is even</small></button>
+          <button className={activeStrategy === 'ODD' ? 'selected' : ''} onClick={() => { setActiveStrategy('ODD'); setAnalysisRunning(false); }}>ODD<small>Next digit is odd</small></button>
         </div>
         <div className="research-signal">
           <span className="section-heading">{activeStrategy} · {marketName}</span>
-          <div className="signal-digit">{activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—')}</div>
-          <div className="signal-label">TARGET DIGIT</div><div className="confidence-track"><i style={{ width: (stats.sample ? Math.min(100, (activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100) : 0) + '%' }} /></div>
-          <div className="candidate-row"><span>Observed baseline success rate</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100).toFixed(2) + '%' : '—'}</strong></div>
+          <div className="signal-digit">{activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : activeStrategy === 'MATCHES' ? (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—') : activeStrategy}</div>
+          <div className="signal-label">{activeStrategy === 'EVEN' || activeStrategy === 'ODD' ? 'PREDICTED PARITY' : 'TARGET DIGIT'}</div><div className="confidence-track"><i style={{ width: (stats.sample ? Math.min(100, (activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : activeStrategy === 'MATCHES' ? Math.max(...stats.probabilities) : rollingDigits.filter(digit => activeStrategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / stats.sample) * 100) : 0) + '%' }} /></div>
+          <div className="candidate-row"><span>Observed baseline success rate</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : activeStrategy === 'MATCHES' ? Math.max(...stats.probabilities) : rollingDigits.filter(digit => activeStrategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / stats.sample) * 100).toFixed(2) + '%' : '—'}</strong></div>
           <div className="candidate-row"><span>Historical sample</span><strong>{stats.sample} / {settings.windowSize}</strong></div>
           <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
-          <p className="muted">Differs selects the least frequent digit; Matches selects the most frequent. These choices are descriptive baselines, can overfit noise, and do not mean any digit is due.</p>
+          <p className="muted">Differs selects the least frequent digit; Matches selects the most frequent. Even and Odd score the next digit against the selected parity. All four are descriptive research baselines, can overfit noise, and do not establish a predictive edge.</p>
         </div>
         <div className="control-row research-controls">
           <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START {activeStrategy} ANALYSIS</button>
@@ -771,9 +774,9 @@ function App() {
     </>}
 
     {tab === 'wins' && <>
-      <section className="stats-grid wins-grid">{(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>{strategy} PAPER WIN RATE</span><strong>{rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>{wins} wins · {rows.length - wins} losses · {rows.length} settled</small></div>; })}</section>
+      <section className="stats-grid wins-grid">{(['DIFFERS','MATCHES','EVEN','ODD'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>{strategy} PAPER WIN RATE</span><strong>{rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>{wins} wins · {rows.length - wins} losses · {rows.length} settled</small></div>; })}</section>
       <section className="overview-grid"><div className="panel metric-card"><span>VERIFIED LIVE P/L</span><strong>—</strong><small>Unavailable: live trading is disabled.</small></div><div className="panel metric-card"><span>LIVE ACCOUNT WIN RATE</span><strong>—</strong><small>No live contracts have been executed or settled.</small></div></section>
-      <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>{(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>{strategy}</td><td>{rows.length}</td><td>{wins}</td><td>{rows.length-wins}</td><td>{rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
+      <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>{(['DIFFERS','MATCHES','EVEN','ODD'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>{strategy}</td><td>{rows.length}</td><td>{wins}</td><td>{rows.length-wins}</td><td>{rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
     </>}
 
     {tab === 'activity' && <>
@@ -796,11 +799,11 @@ function App() {
         </tbody></table></div>
       </section>
       <section className="panel">
-        <div className="section-heading">DIFFERS / MATCHES RESEARCH JOURNAL</div>
+        <div className="section-heading">FOUR-ENGINE RESEARCH JOURNAL</div>
         <p className="muted">Each decision is saved before its next-tick result is known, then updated when the next tick arrives. Unresolved decisions remain pending if the feed disconnects.</p>
         <div className="table-wrap"><table><thead><tr><th>Predicted (UTC)</th><th>Market</th><th>Engine</th><th>Target</th><th>Next digit</th><th>Empirical rate</th><th>Result</th></tr></thead><tbody>
-          {researchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
-          {!researchDecisions.length && <tr><td colSpan={7} className="empty">No research decisions yet. Start either engine after a full analysis window has loaded.</td></tr>}
+          {researchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.strategy === 'EVEN' ? 'Even' : item.strategy === 'ODD' ? 'Odd' : item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
+          {!researchDecisions.length && <tr><td colSpan={7} className="empty">No research decisions yet. Start an engine after a full analysis window has loaded.</td></tr>}
         </tbody></table></div>
       </section>
       <section className="panel">
