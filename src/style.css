@@ -34,3 +34,65 @@ select,.input-wrap,.login-panel input,.setting-field>input{border-color:#40354d;
 th{color:#c2a5e8}
 .result-win{color:#9cddb2}
 @media(max-width:720px){main{padding:16px 12px calc(28px + env(safe-area-inset-bottom))}.topbar{align-items:center}.panel{border-radius:17px}}
+ 
+/* Lotus application polish: five-view navigation, research controls and accessible light mode */
+.tabs{grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.tabs button{font-size:11px;padding:11px 5px;white-space:nowrap}
+.header-actions{flex-wrap:wrap;justify-content:flex-end}
+.theme-toggle{margin-top:0}
+.engine-hero h2{font-family:"Iowan Old Style","Bodoni 72","Didot",Georgia,serif;font-weight:500;font-size:clamp(24px,4vw,34px);margin:12px 0 4px}
+.strategy-switch{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:20px 0}
+.strategy-switch button{display:grid;gap:8px;text-align:left;padding:17px;border:1px solid #3c3348;border-radius:14px;background:#111019;color:#e8e0f0;font-weight:800;letter-spacing:.08em}
+.strategy-switch button.selected{border-color:#b79bd8;background:linear-gradient(135deg,#30243c,#191521);box-shadow:inset 0 0 0 1px #8d72a8}
+.strategy-switch small{font-size:11px;letter-spacing:0;color:#a99bb5;font-weight:500}
+.research-signal{max-width:620px;margin:18px auto;padding:20px;border:1px solid #40354d;border-radius:17px;background:radial-gradient(circle at 50% 0,#2a2035,#14121b 68%);text-align:center}
+.research-signal .candidate-row{text-align:left}
+.signal-digit{font:500 clamp(76px,15vw,116px)/1 "Iowan Old Style","Bodoni 72",Georgia,serif;color:#f4eaff;margin:12px 0 0;text-shadow:0 0 35px #b18bd455}
+.signal-label{font:700 9px ui-monospace,monospace;letter-spacing:.25em;color:#ad9abb;margin-bottom:18px}
+.research-controls{justify-content:center;margin:16px 0 10px}
+.master-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:12px}
+.master-row>div{max-width:620px}
+.master-switch{border:1px solid #68454d;border-radius:999px;padding:11px 16px;background:#2a171d;color:#f3bdc7;font:800 10px ui-monospace,monospace;white-space:nowrap}
+.master-switch:disabled{opacity:1;cursor:not-allowed}
+.wins-grid{margin-bottom:14px}
+.metric-card small{color:#9f93a9;font-size:10px;line-height:1.5}
+.lotus-mark{display:flex;justify-content:flex-end;height:112px;overflow:hidden;margin:-8px -8px 14px}
+.lotus-mark svg{width:180px;height:110px;fill:none;stroke:#d9c8eb;stroke-width:2;opacity:.85;filter:drop-shadow(0 0 12px #bda0d655)}
+.login-panel h1{font-size:54px;letter-spacing:.08em}
+.login-panel .eyebrow{letter-spacing:.24em}
+.theme-light{color:#17151d}
+.theme-light .panel,.theme-light .error{background:#fff;border-color:#e6e0eb;box-shadow:0 10px 30px #281c3510}
+.theme-light .tabs{background:#fff;border-color:#e6e0eb}
+.theme-light .tabs button{color:#6f6877}
+.theme-light .tabs button.active{background:#eee7f5;color:#35263f}
+.theme-light .muted,.theme-light .subhead,.theme-light .field,.theme-light .setting-field{color:#746d7b}
+.theme-light .candidate-row,.theme-light .risk-value{color:#746d7b;border-color:#eee9f1}
+.theme-light .candidate-row strong,.theme-light .risk-value strong,.theme-light td,.theme-light .metric-card strong{color:#201b27}
+.theme-light select,.theme-light .input-wrap,.theme-light .setting-field>input{background:#faf9fc;color:#201b27;border-color:#ddd5e5}
+.theme-light .input-wrap input{color:#201b27}
+.theme-light .strategy-switch button{background:#faf9fc;color:#211b29;border-color:#e2d9e9}
+.theme-light .strategy-switch button.selected{background:#f0e9f7;border-color:#9277a8}
+.theme-light .strategy-switch small,.theme-light .metric-card small{color:#756b7f}
+.theme-light .research-signal{background:linear-gradient(145deg,#f7f1fb,#fff);border-color:#e0d4eb}
+.theme-light .signal-digit{color:#382548;text-shadow:none}
+.theme-light .signal-label{color:#776286}
+.theme-light th{color:#74548c}
+.theme-light td,.theme-light td, .theme-light .empty{border-color:#eee9f1;color:#3a3440}
+.theme-light .bar-track{background:#eee9f1}
+.theme-light .panel-title p,.theme-light .accuracy-note{color:#746d7b}
+.theme-light .accuracy-strip{background:#f4eef9;border-color:#ddd0e9}
+.theme-light .accuracy-strip>strong{color:#503766}
+.theme-light .accuracy-strip small,.theme-light .accuracy-sample{color:#746d7b}
+.theme-light .digits span{color:#43384c;border-color:#e4dce9}
+.theme-light .secondary-button{background:#f4eef9;color:#4b365d;border-color:#ddd0e9}
+.theme-light footer{color:#8a8290}
+@media(max-width:620px){
+ .tabs{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .tabs button{white-space:normal;min-height:42px}
+ .header-actions{gap:6px}
+ .header-actions .secondary-button{font-size:10px;padding:8px}
+ .strategy-switch{grid-template-columns:1fr}
+ .master-row{align-items:flex-start;flex-direction:column}
+ .research-controls{display:grid;grid-template-columns:1fr 1fr}
+}
+@media(max-width:380px){.tabs button{font-size:10px;padding:9px 3px}}
