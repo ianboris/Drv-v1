@@ -129,7 +129,8 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
         setScanState('VERIFYING CONTRACTS');
       }
       if (data.msg_type === 'contracts_for') {
-        const symbol = contractRequests.current.get(Number(data.req_id)) || String(data.echo_req?.contracts_for || data.passthrough?.symbol || '');\n        contractRequests.current.delete(Number(data.req_id));
+        const symbol = contractRequests.current.get(Number(data.req_id)) || String(data.echo_req?.contracts_for || data.passthrough?.symbol || '');
+        contractRequests.current.delete(Number(data.req_id));
         if (!symbol || !marketsRef.current.has(symbol)) return;
         const types = Array.from(getContractTypes(data.contracts || data));
         const supported = types.includes('MULTUP') || types.includes('MULTDOWN');
@@ -212,7 +213,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
           const next: Trade = { ...previous, pnl:Number.isFinite(profit) ? profit : previous.pnl, status:closed ? String(contract.status || 'SETTLED').toUpperCase() : 'OPEN', closedAt:closed ? Date.now() : undefined };
           tradeMap.current.set(id, next);
           setTrades(items => items.map(item => item.id === id ? next : item));
-          if (closed) {
+          if (closed && previous.status === 'OPEN') {
             openTradeId.current = null;
             if (Number.isFinite(profit)) {
               const nextPnl = dailyPnlRef.current + profit;
