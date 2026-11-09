@@ -117,3 +117,50 @@ body[data-theme="light"] .theme-light{background:#f4f4f8}
 .theme-light .execution-lock{color:#a13d50}
 .theme-light .confidence-track{background:#e8e0ed}
 @media(max-width:620px){.mode-banner{align-items:flex-start}.execution-lock{font-size:8px}.master-actions{width:100%}.master-actions>*{flex:1}}
+
+
+/* Lotus dashboard refresh: clearer desktop workspace, stronger hierarchy, and selected-market journal */
+@media (min-width: 981px) {
+  main:not(.login-shell) {
+    width: min(1480px, 100%);
+    display: grid;
+    grid-template-columns: 218px minmax(0, 1fr);
+    column-gap: 24px;
+    align-items: start;
+    padding: 28px 28px 44px;
+  }
+  main:not(.login-shell) > .topbar { grid-column: 2; grid-row: 1; align-items: center; margin-bottom: 20px; padding: 0 0 18px; border-bottom: 1px solid #302a3a; }
+  main:not(.login-shell) > .tabs { grid-column: 1; grid-row: 1 / span 2; display: flex; flex-direction: column; align-self: start; position: sticky; top: 22px; gap: 7px; margin: 0; padding: 10px; border-radius: 18px; }
+  main:not(.login-shell) > .tabs button { min-height: 46px; text-align: left; padding: 12px 14px; border-radius: 11px; font-size: 12px; }
+  main:not(.login-shell) > .mode-banner,
+  main:not(.login-shell) > .error,
+  main:not(.login-shell) > section,
+  main:not(.login-shell) > footer { grid-column: 2; }
+}
+main:not(.login-shell) .panel,
+main:not(.login-shell) .error { border-radius: 19px; padding: 20px; }
+main:not(.login-shell) .mode-banner { border-radius: 15px; padding: 13px 17px; }
+main:not(.login-shell) .metric-card { min-height: 112px; align-content: center; }
+main:not(.login-shell) .market-panel { padding: 20px 22px; }
+main:not(.login-shell) .market-scanner .table-wrap { max-height: 440px; }
+main:not(.login-shell) .tabs button { transition: background .18s ease, color .18s ease, transform .18s ease; }
+main:not(.login-shell) .tabs button:hover { background: #211b2b; color: #f4eaff; transform: translateX(2px); }
+.journal-toolbar { align-items: end; gap: 18px; }
+.journal-market-filter { display: grid; gap: 7px; min-width: 220px; color: #a99bb5; font-size: 11px; font-weight: 700; }
+.journal-market-filter select { min-width: 0; padding: 10px 12px; border-radius: 11px; }
+.account-status { display: inline-flex; align-items: center; gap: 7px; }
+.account-status i { width: 7px; height: 7px; border-radius: 50%; background: #d7ad48; display: inline-block; }
+.account-status.online i { background: #62d781; }
+.theme-light .tabs button:hover { background: #f0e9f7; color: #35263f; }
+.theme-light .journal-market-filter { color: #746d7b; }
+@media (max-width: 980px) {
+  main:not(.login-shell) { display: block; width: min(1120px, 100%); padding: 20px 16px 36px; }
+  main:not(.login-shell) > .tabs { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(18px); }
+}
+@media (max-width: 620px) {
+  main:not(.login-shell) { padding: 14px 12px calc(30px + env(safe-area-inset-bottom)); }
+  main:not(.login-shell) .panel { padding: 16px; border-radius: 16px; }
+  .journal-toolbar { align-items: stretch; flex-direction: column; }
+  .journal-market-filter { min-width: 0; width: 100%; }
+  .journal-market-filter select { width: 100%; }
+}
