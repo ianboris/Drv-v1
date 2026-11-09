@@ -115,7 +115,7 @@ function App() {
   });
   const ticksRef = useRef<Tick[]>([]);
   useEffect(() => { analysisStateRef.current = { running: analysisRunning, strategy: activeStrategy }; }, [analysisRunning, activeStrategy]);
-  useEffect(() => { try { localStorage.setItem('lotus-theme', theme); } catch {} }, [theme]);
+  useEffect(() => { try { localStorage.setItem('lotus-theme', theme); } catch {} document.body.dataset.theme = theme; }, [theme]);
   const pendingChoicesRef = useRef<Map<string, { id: string; symbol: string; barrier: number; predictedEpoch: number; analysisWindow: number }>>(new Map());
   const pendingResearchRef = useRef<Map<string, PendingResearch>>(new Map());
   const analysisStateRef = useRef<{ running: boolean; strategy: ResearchStrategy }>({ running: false, strategy: 'DIFFERS' });
@@ -676,6 +676,11 @@ function App() {
       <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Settings</button>
     </nav>
 
+    <section className="mode-banner">
+      <span className={status === 'CONNECTED' ? 'mode-light active' : 'mode-light'} />
+      <div><strong>LOTUS ENGINE</strong><small>{status === 'CONNECTED' ? 'LIVE MARKET FEED · RESEARCH MODE' : 'HISTORICAL MODE · LAST AVAILABLE DATA'}</small></div>
+      <span className="execution-lock">EXECUTION LOCKED</span>
+    </section>
     {error && <div className="error" role="alert">{error}</div>}
 
     {tab === 'overview' && <>
@@ -702,7 +707,7 @@ function App() {
         <div className="panel risk-panel">
           <div className="section-heading">RISK SETTINGS</div>
           <div className="risk-value"><span>Stake per trade</span><strong>{settings.stake.toFixed(2)} units</strong></div>
-          <div className="risk-value"><span>Daily loss stop</span><strong>{settings.dailyLossLimit.toFixed(2)} units</strong></div>
+          <div className="risk-value"><span>Daily loss limit</span><strong>{settings.dailyLossLimit.toFixed(2)} units</strong></div><div className="risk-value"><span>Take profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} units</strong></div>
           <div className="risk-value"><span>Loss limit usage</span><strong>Not connected</strong></div>
           <button className="secondary-button" onClick={() => setTab('settings')}>Adjust settings</button>
         </div>
@@ -749,7 +754,7 @@ function App() {
         <div className="research-signal">
           <span className="section-heading">{activeStrategy} · {marketName}</span>
           <div className="signal-digit">{activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—')}</div>
-          <div className="signal-label">TARGET DIGIT</div>
+          <div className="signal-label">TARGET DIGIT</div><div className="confidence-track"><i style={{ width: (stats.sample ? Math.min(100, (activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100) : 0) + '%' }} /></div>
           <div className="candidate-row"><span>Observed baseline success rate</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100).toFixed(2) + '%' : '—'}</strong></div>
           <div className="candidate-row"><span>Historical sample</span><strong>{stats.sample} / {settings.windowSize}</strong></div>
           <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
@@ -761,7 +766,7 @@ function App() {
         </div>
         <small className="lock-note">{analysisRunning ? activeStrategy + ' paper research running · no Deriv orders sent' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
       </section>
-      <section className="panel"><div className="section-heading">LIVE TRADING MASTER SWITCH</div><div className="master-row"><div><strong>Live execution</strong><p className="muted">Locked pending account authorization, verified settlement reconciliation and server-enforced risk controls.</p></div><button className="master-switch" disabled aria-pressed={liveMaster}>OFF · LOCKED</button></div></section>
+      <section className="panel"><div className="section-heading">LIVE TRADING MASTER SWITCH</div><div className="master-row"><div><strong>Live execution</strong><p className="muted">Locked pending account authorization, verified settlement reconciliation and server-enforced risk controls.</p></div><div className="master-actions"><button className="master-switch" disabled aria-pressed={liveMaster}>OFF · LOCKED</button><button className="stop-button" onClick={() => setLiveMaster(false)}>STOP EXECUTION</button></div></div></section>
       <section className="panel"><div className="section-heading">CROSS-MARKET RESEARCH</div><p className="muted">Public market ticks are collected while this dashboard is open. Closing the browser stops the live collector in this version.</p><div className="candidate-row"><span>Markets subscribed</span><strong>{symbols.length}</strong></div><div className="candidate-row"><span>Live tick stream</span><strong>{status}</strong></div><div className="candidate-row"><span>Persisted research decisions</span><strong>{researchDecisions.length}</strong></div></section>
     </>}
 
