@@ -112,6 +112,11 @@ function App() {
     let socket: WebSocket | null = null;
     const subscriptionTimers: number[] = [];
     let reconnectAttempt = 0;
+    let stableConnectionTimer: number | undefined;
+    let heartbeatInterval: number | undefined;
+    let heartbeatTimeout: number | undefined;
+    let heartbeatRequestId = 900000;
+    let awaitingHeartbeat = false;
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
@@ -120,10 +125,25 @@ function App() {
       ws.current = socket;
       socket.onopen = () => {
         if (!alive || !socket) return;
-        reconnectAttempt = 0;
+        if (stableConnectionTimer) window.clearTimeout(stableConnectionTimer);
+        stableConnectionTimer = window.setTimeout(() => {
+          reconnectAttempt = 0;
+          console.info('[DERIV] Connection stable; reconnect backoff reset');
+        }, 60000);
         console.info('[DERIV] WebSocket connected', { readyState: socket.readyState });
         setStatus('CONNECTED');
         setError('');
+        heartbeatInterval = window.setInterval(() => {
+          if (!alive || socket?.readyState !== WebSocket.OPEN || awaitingHeartbeat) return;
+          awaitingHeartbeat = true;
+          const reqId = heartbeatRequestId++;
+          socket.send(JSON.stringify({ ping: 1, req_id: reqId }));
+          heartbeatTimeout = window.setTimeout(() => {
+            if (!alive || !awaitingHeartbeat || socket?.readyState !== WebSocket.OPEN) return;
+            console.warn('[DERIV] Heartbeat response timed out; restarting connection');
+            socket.close(4000, 'Heartbeat timeout');
+          }, 10000);
+        }, 30000);
         // Ask Deriv only for underlyings that list DIGITDIFF as an available contract.
         // The current API no longer accepts product_type on active_symbols.
         socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF'], req_id: 1 }));
@@ -132,6 +152,15 @@ function App() {
         if (!alive) return;
         try {
           const response = JSON.parse(event.data);
+          if (response.msg_type === 'ping') {
+            if (Number(response.req_id) === heartbeatRequestId - 1) {
+              awaitingHeartbeat = false;
+              if (heartbeatTimeout) window.clearTimeout(heartbeatTimeout);
+              heartbeatTimeout = undefined;
+              console.debug('[DERIV] Heartbeat acknowledged');
+            }
+            return;
+          }
           if (response.error) {
             const failedReqId = Number(response.req_id);
             if (Number.isInteger(failedReqId)) proposalRequestsRef.current.delete(failedReqId);
@@ -332,6 +361,10 @@ function App() {
           wasClean: event.wasClean,
           readyState: socket?.readyState,
         });
+        if (stableConnectionTimer) window.clearTimeout(stableConnectionTimer);
+        if (heartbeatInterval) window.clearInterval(heartbeatInterval);
+        if (heartbeatTimeout) window.clearTimeout(heartbeatTimeout);
+        awaitingHeartbeat = false;
         if (!alive) return;
         subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
         subscriptionTimers.length = 0;
@@ -346,6 +379,9 @@ function App() {
     return () => {
       alive = false;
       if (reconnectTimer.current) window.clearTimeout(reconnectTimer.current);
+      if (stableConnectionTimer) window.clearTimeout(stableConnectionTimer);
+      if (heartbeatInterval) window.clearInterval(heartbeatInterval);
+      if (heartbeatTimeout) window.clearTimeout(heartbeatTimeout);
       subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
       if (socket) {
         if (socket.readyState === WebSocket.OPEN) {
