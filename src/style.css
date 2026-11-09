@@ -5,3 +5,115 @@
 .login-shell{min-height:100vh;display:grid;place-items:center}.login-panel{width:min(440px,100%);padding:24px}.login-panel h1{margin:12px 0}.login-panel .setting-field{margin:22px 0}.login-panel input{width:100%;padding:12px;border:1px solid #294732;border-radius:9px;background:#09130c;color:#eef8f0}.login-panel .secondary-button{width:100%;padding:13px}.login-panel small{display:block;margin-top:16px}.header-actions{display:flex;align-items:center;gap:10px}.header-actions .secondary-button{margin:0}@media(max-width:500px){.header-actions{align-items:flex-end;flex-direction:column;gap:7px}.header-actions .secondary-button{padding:7px 9px}}
 
 .scanner-leader{display:grid;gap:5px;margin:12px 0;padding:13px;border:1px solid #294732;border-radius:11px;background:#0a180e}.scanner-leader span{color:#8fb69a;font:700 10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}.scanner-leader strong{color:#e7ffeb;font-size:19px}.scanner-leader small{color:#a8b7ab;font-size:11px;line-height:1.5}.text-button{border:0;padding:0;background:transparent;color:#a9e8b8;text-align:left;text-decoration:underline;text-underline-offset:3px}.setting-field>input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #294732;background:#09130c;color:#eef8f0}.market-scanner .table-wrap{max-height:520px;overflow:auto}.market-scanner td{white-space:nowrap}
+
+/* Lotus identity refresh */
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f4f1fa;background:#0d0d12}
+body{background:radial-gradient(ellipse at 82% -10%,#292039 0%,#111019 34%,#0d0d12 72%)}
+h1{font-family:"Iowan Old Style","Bodoni 72","Didot",Georgia,serif;font-weight:500;letter-spacing:.015em}
+.eyebrow,.section-heading{color:#b9a4d8;letter-spacing:.18em}
+.panel,.error{border-color:#302a3a;background:rgba(22,22,31,.94);box-shadow:0 14px 36px #0005}
+.tabs{border-color:#302a3a;background:#12111a}
+.tabs button.active{background:#30263e;color:#f4eaff}
+.status{border-color:#594b32;background:#241d12;color:#ecd49a}
+.status.online{border-color:#4d4262;background:#211a2c;color:#d8c2f2}
+.status.online i{background:#b69ad9}
+select,.input-wrap,.login-panel input,.setting-field>input{border-color:#40354d;background:#111019;color:#f4f1fa}
+.secondary-button{border-color:#59496d;background:#282033;color:#e7d8f8}
+.start-button{background:#58416f;color:#fff}
+.stop-button{background:#602a36;color:#ffe0e7}
+.digits span{border-color:#393044;color:#d7cbe4}
+.digits .last{outline-color:#c2a5e8}
+.bar-track{background:#292333}
+.bar-track i{background:#a88acb}
+.accuracy-strip{border-color:#59496d;background:linear-gradient(110deg,#292033,#17141f)}
+.accuracy-strip>strong{color:#e7d8f8}
+.scanner-leader{border-color:#443653;background:#1b1723}
+.scanner-leader span{color:#c0a7dc}
+.scanner-leader strong{color:#f3eaff}
+.text-button{color:#d7baf5}
+th{color:#c2a5e8}
+.result-win{color:#9cddb2}
+@media(max-width:720px){main{padding:16px 12px calc(28px + env(safe-area-inset-bottom))}.topbar{align-items:center}.panel{border-radius:17px}}
+ 
+/* Lotus application polish: five-view navigation, research controls and accessible light mode */
+.tabs{grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.tabs button{font-size:11px;padding:11px 5px;white-space:nowrap}
+.header-actions{flex-wrap:wrap;justify-content:flex-end}
+.theme-toggle{margin-top:0}
+.engine-hero h2{font-family:"Iowan Old Style","Bodoni 72","Didot",Georgia,serif;font-weight:500;font-size:clamp(24px,4vw,34px);margin:12px 0 4px}
+.strategy-switch{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:20px 0}
+.strategy-switch button{display:grid;gap:8px;text-align:left;padding:17px;border:1px solid #3c3348;border-radius:14px;background:#111019;color:#e8e0f0;font-weight:800;letter-spacing:.08em}
+.strategy-switch button.selected{border-color:#b79bd8;background:linear-gradient(135deg,#30243c,#191521);box-shadow:inset 0 0 0 1px #8d72a8}
+.strategy-switch small{font-size:11px;letter-spacing:0;color:#a99bb5;font-weight:500}
+.research-signal{max-width:620px;margin:18px auto;padding:20px;border:1px solid #40354d;border-radius:17px;background:radial-gradient(circle at 50% 0,#2a2035,#14121b 68%);text-align:center}
+.research-signal .candidate-row{text-align:left}
+.signal-digit{font:500 clamp(76px,15vw,116px)/1 "Iowan Old Style","Bodoni 72",Georgia,serif;color:#f4eaff;margin:12px 0 0;text-shadow:0 0 35px #b18bd455}
+.signal-label{font:700 9px ui-monospace,monospace;letter-spacing:.25em;color:#ad9abb;margin-bottom:18px}
+.research-controls{justify-content:center;margin:16px 0 10px}
+.master-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:12px}
+.master-row>div{max-width:620px}
+.master-switch{border:1px solid #68454d;border-radius:999px;padding:11px 16px;background:#2a171d;color:#f3bdc7;font:800 10px ui-monospace,monospace;white-space:nowrap}
+.master-switch:disabled{opacity:1;cursor:not-allowed}
+.wins-grid{margin-bottom:14px}
+.metric-card small{color:#9f93a9;font-size:10px;line-height:1.5}
+.lotus-mark{display:flex;justify-content:flex-end;height:112px;overflow:hidden;margin:-8px -8px 14px}
+.lotus-mark svg{width:180px;height:110px;fill:none;stroke:#d9c8eb;stroke-width:2;opacity:.85;filter:drop-shadow(0 0 12px #bda0d655)}
+.login-panel h1{font-size:54px;letter-spacing:.08em}
+.login-panel .eyebrow{letter-spacing:.24em}
+.theme-light{color:#17151d}
+.theme-light .panel,.theme-light .error{background:#fff;border-color:#e6e0eb;box-shadow:0 10px 30px #281c3510}
+.theme-light .tabs{background:#fff;border-color:#e6e0eb}
+.theme-light .tabs button{color:#6f6877}
+.theme-light .tabs button.active{background:#eee7f5;color:#35263f}
+.theme-light .muted,.theme-light .subhead,.theme-light .field,.theme-light .setting-field{color:#746d7b}
+.theme-light .candidate-row,.theme-light .risk-value{color:#746d7b;border-color:#eee9f1}
+.theme-light .candidate-row strong,.theme-light .risk-value strong,.theme-light td,.theme-light .metric-card strong{color:#201b27}
+.theme-light select,.theme-light .input-wrap,.theme-light .setting-field>input{background:#faf9fc;color:#201b27;border-color:#ddd5e5}
+.theme-light .input-wrap input{color:#201b27}
+.theme-light .strategy-switch button{background:#faf9fc;color:#211b29;border-color:#e2d9e9}
+.theme-light .strategy-switch button.selected{background:#f0e9f7;border-color:#9277a8}
+.theme-light .strategy-switch small,.theme-light .metric-card small{color:#756b7f}
+.theme-light .research-signal{background:linear-gradient(145deg,#f7f1fb,#fff);border-color:#e0d4eb}
+.theme-light .signal-digit{color:#382548;text-shadow:none}
+.theme-light .signal-label{color:#776286}
+.theme-light th{color:#74548c}
+.theme-light td,.theme-light td, .theme-light .empty{border-color:#eee9f1;color:#3a3440}
+.theme-light .bar-track{background:#eee9f1}
+.theme-light .panel-title p,.theme-light .accuracy-note{color:#746d7b}
+.theme-light .accuracy-strip{background:#f4eef9;border-color:#ddd0e9}
+.theme-light .accuracy-strip>strong{color:#503766}
+.theme-light .accuracy-strip small,.theme-light .accuracy-sample{color:#746d7b}
+.theme-light .digits span{color:#43384c;border-color:#e4dce9}
+.theme-light .secondary-button{background:#f4eef9;color:#4b365d;border-color:#ddd0e9}
+.theme-light footer{color:#8a8290}
+@media(max-width:620px){
+ .tabs{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .tabs button{white-space:normal;min-height:42px}
+ .header-actions{gap:6px}
+ .header-actions .secondary-button{font-size:10px;padding:8px}
+ .strategy-switch{grid-template-columns:1fr}
+ .master-row{align-items:flex-start;flex-direction:column}
+ .research-controls{display:grid;grid-template-columns:1fr 1fr}
+}
+@media(max-width:380px){.tabs button{font-size:10px;padding:9px 3px}}
+
+/* Operational mode, empirical score meter, and account/risk controls */
+.mode-banner{display:flex;align-items:center;gap:10px;padding:11px 14px;margin:0 0 14px;border:1px solid #514331;border-radius:12px;background:#211b15}
+.mode-banner>div{display:grid;gap:3px;flex:1}
+.mode-banner strong{font:800 10px ui-monospace,monospace;letter-spacing:.15em;color:#e8d6b2}
+.mode-banner small{font:600 9px ui-monospace,monospace;letter-spacing:.08em;color:#b9a88c}
+.mode-light{width:8px;height:8px;border-radius:50%;background:#c69b4c;box-shadow:0 0 12px #c69b4c77}
+.mode-light.active{background:#9bd3ac;box-shadow:0 0 12px #9bd3ac77}
+.execution-lock{font:800 9px ui-monospace,monospace;color:#f1aeb8;letter-spacing:.08em}
+.confidence-track{height:5px;max-width:260px;margin:0 auto 18px;border-radius:99px;background:#3a3142;overflow:hidden}
+.confidence-track i{display:block;height:100%;border-radius:99px;background:#b89ad8}
+.master-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.account-status{border-color:#594b32;background:#241d12;color:#ecd49a}
+body[data-theme="light"]{background:#f4f4f8}
+body[data-theme="light"] .theme-light{background:#f4f4f8}
+.theme-light .mode-banner{background:#fbf7ee;border-color:#e7dcc4}
+.theme-light .mode-banner strong{color:#6e5632}
+.theme-light .mode-banner small{color:#887655}
+.theme-light .execution-lock{color:#a13d50}
+.theme-light .confidence-track{background:#e8e0ed}
+@media(max-width:620px){.mode-banner{align-items:flex-start}.execution-lock{font-size:8px}.master-actions{width:100%}.master-actions>*{flex:1}}

@@ -7,12 +7,15 @@ import './style.css';
 const DERIV_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
-type Settings = { stake: number; dailyLossLimit: number; windowSize: number; currency: string };
+type Settings = { stake: number; dailyLossLimit: number; takeProfitLimit: number; windowSize: number; currency: string };
 type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
 type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
 type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean; analysisWindow?: number };
-type Tab = 'overview' | 'activity' | 'settings';
-const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100, currency: '' };
+type ResearchStrategy = 'DIFFERS' | 'MATCHES';
+type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
+type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
+type Tab = 'overview' | 'engine' | 'wins' | 'activity' | 'settings';
+const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, takeProfitLimit: 5, windowSize: 100, currency: '' };
 
 function readSettings(): Settings {
   try {
@@ -22,6 +25,7 @@ function readSettings(): Settings {
     return {
       stake: Number.isFinite(parsed.stake) && Number(parsed.stake) > 0 ? Number(parsed.stake) : 1,
       dailyLossLimit: Number.isFinite(parsed.dailyLossLimit) && Number(parsed.dailyLossLimit) > 0 ? Number(parsed.dailyLossLimit) : 2,
+      takeProfitLimit: Number.isFinite(parsed.takeProfitLimit) && Number(parsed.takeProfitLimit) > 0 ? Number(parsed.takeProfitLimit) : 5,
       windowSize: Number.isFinite(parsed.windowSize) && Number(parsed.windowSize) >= 50 ? Math.min(5000, Math.round(Number(parsed.windowSize))) : 100,
       currency: typeof parsed.currency === 'string' ? parsed.currency.trim().toUpperCase() : ''
     };
@@ -48,6 +52,32 @@ function getStats(digits: number[]) {
   return { counts, probabilities, entropy, barrier, barrierRate: barrier >= 0 ? probabilities[barrier] : 0, sample: n };
 }
 
+const RESEARCH_QUEUE_KEY = 'lotus-research-sync-v1';
+function readResearchQueue(): Record<string, unknown>[] {
+  try { const value = JSON.parse(localStorage.getItem(RESEARCH_QUEUE_KEY) || '[]'); return Array.isArray(value) ? value : []; }
+  catch { return []; }
+}
+async function queueResearchDecision(decision: Record<string, unknown>) {
+  const id = String(decision.decision_uid || '');
+  const queue = readResearchQueue().filter(item => item.decision_uid !== id);
+  queue.push(decision);
+  try { localStorage.setItem(RESEARCH_QUEUE_KEY, JSON.stringify(queue.slice(-2000))); } catch {}
+  await flushResearchQueue();
+}
+async function flushResearchQueue() {
+  if (!navigator.onLine) return;
+  const queue = readResearchQueue();
+  if (!queue.length) return;
+  for (let offset = 0; offset < queue.length; offset += 100) {
+    const batch = queue.slice(offset, offset + 100);
+    const response = await fetch('/api/research', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decisions: batch }) });
+    if (!response.ok) throw new Error('Research sync is waiting for a connection.');
+    const sent = new Set(batch.map(item => String(item.decision_uid)));
+    const remaining = readResearchQueue().filter(item => !sent.has(String(item.decision_uid)));
+    try { localStorage.setItem(RESEARCH_QUEUE_KEY, JSON.stringify(remaining)); } catch {}
+  }
+}
+
 function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
   if (!total) return 0;
   const p = wins / total;
@@ -56,7 +86,12 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
 }
 
 function App() {
+  useEffect(() => { if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined); }, []);
   const [tab, setTab] = useState<Tab>('overview');
+  const [activeStrategy, setActiveStrategy] = useState<ResearchStrategy>('DIFFERS');
+  const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [liveMaster, setLiveMaster] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('lotus-theme') === 'light' ? 'light' : 'dark');
   const [symbol, setSymbol] = useState('1HZ100V');
   const [symbols, setSymbols] = useState<ActiveSymbol[]>([]);
   const [ticks, setTicks] = useState<Tick[]>([]);
@@ -73,12 +108,17 @@ function App() {
   const [saved, setSaved] = useState(true);
   const [proposalQuotes, setProposalQuotes] = useState<Record<string, ProposalQuote>>({});
   const [choiceAggregates, setChoiceAggregates] = useState<ChoiceAggregate[]>([]);
+  const [researchDecisions, setResearchDecisions] = useState<ResearchDecision[]>([]);
   const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
     try { return JSON.parse(localStorage.getItem('ddpe-choice-outcomes-v1') || '[]') as ChoiceOutcome[]; }
     catch { return []; }
   });
   const ticksRef = useRef<Tick[]>([]);
+  useEffect(() => { analysisStateRef.current = { running: analysisRunning, strategy: activeStrategy }; }, [analysisRunning, activeStrategy]);
+  useEffect(() => { try { localStorage.setItem('lotus-theme', theme); } catch {} document.body.dataset.theme = theme; }, [theme]);
   const pendingChoicesRef = useRef<Map<string, { id: string; symbol: string; barrier: number; predictedEpoch: number; analysisWindow: number }>>(new Map());
+  const pendingResearchRef = useRef<Map<string, PendingResearch>>(new Map());
+  const analysisStateRef = useRef<{ running: boolean; strategy: ResearchStrategy }>({ running: false, strategy: 'DIFFERS' });
   const ticksBySymbolRef = useRef<Map<string, Tick[]>>(new Map());
   const pipSizesBySymbolRef = useRef<Map<string, number>>(new Map());
   const selectedSymbolRef = useRef(symbol);
@@ -138,9 +178,9 @@ function App() {
             socket.close(4000, 'Heartbeat timeout');
           }, 10000);
         }, 30000);
-        // Ask Deriv only for underlyings that list DIGITDIFF as an available contract.
+        // Ask Deriv for underlyings supporting either digit contract family.
         // The current API no longer accepts product_type on active_symbols.
-        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF'], req_id: 1 }));
+        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF', 'DIGITMATCH'], req_id: 1 }));
       };
       socket.onmessage = (event) => {
         if (!alive) return;
@@ -277,6 +317,14 @@ function App() {
                     tick_uid: tick.id, symbol: marketSymbol, epoch, quote,
                     pip_size: tick.pipSize, last_digit: tick.lastDigit,
                   });
+                  for (const [researchKey, pendingResearch] of pendingResearchRef.current) {
+                    if (pendingResearch.symbol !== marketSymbol) continue;
+                    const isCorrect = pendingResearch.strategy === 'DIFFERS' ? tick.lastDigit !== pendingResearch.target_digit : tick.lastDigit === pendingResearch.target_digit;
+                    const settled: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy: pendingResearch.strategy, targetDigit: pendingResearch.target_digit, predictedEpoch: pendingResearch.predicted_at_epoch, settledEpoch: epoch, outcomeDigit: tick.lastDigit, correct: isCorrect, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
+                    setResearchDecisions(previous => [...previous.filter(item => item.id !== settled.id), settled].slice(-2000));
+                    queueResearchDecision({ ...pendingResearch, settled_at_epoch: epoch, outcome_digit: tick.lastDigit, is_correct: isCorrect }).then(() => setBackendStatus('Research journal synced')).catch(() => setBackendStatus('Research journal queued for sync'));
+                    pendingResearchRef.current.delete(researchKey);
+                  }
                   const pending = pendingChoicesRef.current.get(marketSymbol);
                   if (pending) {
                     const outcome: ChoiceOutcome = {
@@ -320,6 +368,19 @@ function App() {
                   }
                   const priorDigits = currentTicks.slice(-windowSizeRef.current).map((item) =>
                     item.lastDigit ?? digitFromQuote(item.quote, tickPipSize));
+                  if (priorDigits.length >= windowSizeRef.current && analysisStateRef.current.running) {
+                    const priorStats = getStats(priorDigits);
+                    const strategy = analysisStateRef.current.strategy;
+                    const targetDigit = strategy === 'DIFFERS' ? priorStats.barrier : priorStats.counts.indexOf(Math.max(...priorStats.counts));
+                    if (targetDigit >= 0) {
+                      const empiricalRate = strategy === 'DIFFERS' ? 1 - priorStats.probabilities[targetDigit] : priorStats.probabilities[targetDigit];
+                      const pendingResearch: PendingResearch = { decision_uid: crypto.randomUUID(), symbol: marketSymbol, strategy, target_digit: targetDigit, predicted_at_epoch: epoch, analysis_window: windowSizeRef.current, sample_size: priorStats.sample, empirical_rate: Number(empiricalRate.toFixed(6)), model_version: 'frequency-baseline-v1' };
+                      pendingResearchRef.current.set(marketSymbol + ':' + strategy, pendingResearch);
+                      const openDecision: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy, targetDigit, predictedEpoch: epoch, settledEpoch: null, outcomeDigit: null, correct: null, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
+                      setResearchDecisions(previous => [...previous.filter(item => item.id !== openDecision.id), openDecision].slice(-2000));
+                      queueResearchDecision({ ...pendingResearch, settled_at_epoch: null, outcome_digit: null, is_correct: null }).then(() => setBackendStatus('Research decision synced')).catch(() => setBackendStatus('Research decision queued for sync'));
+                    }
+                  }
                   if (priorDigits.length >= windowSizeRef.current) {
                     const priorStats = getStats(priorDigits);
                     if (priorStats.barrier >= 0) {
@@ -412,7 +473,7 @@ function App() {
       if (!response.ok) throw new Error('Could not load saved settings from the backend.');
       const remote = await response.json();
       if (!active) return;
-      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), takeProfitLimit: Number(remote.takeProfitLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
       setAuthenticated(true);
       setSettingsLoaded(true);
     }).catch((reason) => { if (active) setLoginError(reason instanceof Error ? reason.message : 'Backend session check failed.'); })
@@ -448,6 +509,22 @@ function App() {
 
   useEffect(() => {
     if (!authenticated) return;
+    const flush = () => { flushResearchQueue().catch(() => setBackendStatus('Offline journal queue · awaiting sync')); };
+    window.addEventListener('online', flush);
+    const timer = window.setInterval(flush, 15000);
+    flush();
+    return () => { window.removeEventListener('online', flush); window.clearInterval(timer); };
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    let active = true;
+    fetch('/api/research', { credentials: 'same-origin', cache: 'no-store' }).then(async response => { if (!response.ok) throw new Error('Research journal unavailable'); return response.json(); }).then(data => { if (active && Array.isArray(data.decisions)) setResearchDecisions(data.decisions); }).catch(() => { if (active) setBackendStatus('Research journal unavailable'); });
+    return () => { active = false; };
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated) return;
     let active = true;
     fetch('/api/choices', { credentials: 'same-origin', cache: 'no-store' })
       .then(async (response) => {
@@ -466,7 +543,7 @@ function App() {
 
   useEffect(() => {
     if (!authenticated || !settingsLoaded) return;
-    if (!(settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000)) {
+    if (!(settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && settings.takeProfitLimit > 0 && settings.takeProfitLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000)) {
       setSaved(false);
       return;
     }
@@ -512,7 +589,7 @@ function App() {
     setSettings((current) => ({ ...current, [key]: value } as Settings));
     setSaved(false);
   };
-  const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
+  const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && settings.takeProfitLimit > 0 && settings.takeProfitLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
 
   function requestMarketProposal(marketSymbol: string, marketTicks?: Tick[]) {
     const currentSettings = settingsRef.current;
@@ -567,7 +644,7 @@ function App() {
       const savedResponse = await fetch('/api/settings', { credentials: 'same-origin', cache: 'no-store' });
       if (!savedResponse.ok) throw new Error('Login succeeded, but settings could not be loaded from Neon.');
       const remote = await savedResponse.json();
-      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), takeProfitLimit: Number(remote.takeProfitLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
       setSettingsLoaded(true);
       setAuthenticated(true);
       setLoginPassword('');
@@ -582,21 +659,28 @@ function App() {
     ticksRef.current = [];
   };
 
-  if (authChecking) return <main className="login-shell"><section className="panel login-panel"><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Checking secure session</h1><p className="muted">{backendStatus}</p></section></main>;
-  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Sign in</h1><p className="muted">Use the private app password configured in your deployment's environment variables. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
+  if (authChecking) return <main className="login-shell"><section className="panel login-panel"><div className="eyebrow">LOTUS PRIVATE ACCESS</div><h1>Checking secure session</h1><p className="muted">{backendStatus}</p></section></main>;
+  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="lotus-mark" aria-hidden="true"><svg viewBox="0 0 180 110"><path d="M90 96C57 76 51 47 90 9C129 47 123 76 90 96Z"/><path d="M90 96C38 88 17 64 28 35C61 43 82 63 90 96Z"/><path d="M90 96C142 88 163 64 152 35C119 43 98 63 90 96Z"/><path d="M90 96C73 65 76 37 90 18C104 37 107 65 90 96Z"/></svg></div><div className="eyebrow">WELCOME TO</div><h1>LOTUS</h1><p className="muted">Deriv digit intelligence · research first</p><p className="muted">Use the private app password configured in your deployment's environment variables. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
 
-  return <main>
+  return <main className={theme === 'light' ? 'theme-light' : 'theme-dark'}>
     <header className="topbar">
-      <div><div className="eyebrow">DDPE · DERIV DIFFERS</div><h1>Digit Prediction Engine</h1><p className="subhead">Live market research and risk controls</p></div>
-      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span><button className="secondary-button" onClick={logout}>Sign out</button></div>
+      <div><div className="eyebrow">LOTUS · DERIV RESEARCH</div><h1>Lotus</h1><p className="subhead">Deriv digit intelligence · research first</p></div>
+      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />MARKET {status}</span><span className="status account-status">ACCOUNT NOT LINKED</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
       <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button>
-      <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>Activity</button>
+      <button className={tab === 'engine' ? 'active' : ''} onClick={() => setTab('engine')}>Differs / Matches</button>
+      <button className={tab === 'wins' ? 'active' : ''} onClick={() => setTab('wins')}>Wins</button>
+      <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>Journal</button>
       <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Settings</button>
     </nav>
 
+    <section className="mode-banner">
+      <span className={status === 'CONNECTED' ? 'mode-light active' : 'mode-light'} />
+      <div><strong>LOTUS ENGINE</strong><small>{status === 'CONNECTED' ? 'LIVE MARKET FEED · RESEARCH MODE' : 'HISTORICAL MODE · LAST AVAILABLE DATA'}</small></div>
+      <span className="execution-lock">EXECUTION LOCKED</span>
+    </section>
     {error && <div className="error" role="alert">{error}</div>}
 
     {tab === 'overview' && <>
@@ -606,12 +690,12 @@ function App() {
             {symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}
           </select>
         </label>
-        <div className="quote"><span>{marketName}</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong><small>{ticks.length.toLocaleString()} ticks in this market · {symbols.length} Differs-capable markets monitored</small></div>
+        <div className="quote"><span>{marketName}</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong><small>{ticks.length.toLocaleString()} ticks in this market · {symbols.length} digit-contract markets monitored</small></div>
       </section>
 
       <section className="overview-grid">
         <div className="panel decision-panel">
-          <div className="section-heading">DIFFERS RESEARCH STATUS</div>
+          <div className="section-heading">DIFFERS SIGNAL RESEARCH</div>
           <div className="decision">COLLECTING DATA</div>
           <p className="muted">No live order is being sent. The current repository has no authenticated execution service or validated signal model.</p>
           <div className="divider" />
@@ -623,14 +707,14 @@ function App() {
         <div className="panel risk-panel">
           <div className="section-heading">RISK SETTINGS</div>
           <div className="risk-value"><span>Stake per trade</span><strong>{settings.stake.toFixed(2)} units</strong></div>
-          <div className="risk-value"><span>Daily loss stop</span><strong>{settings.dailyLossLimit.toFixed(2)} units</strong></div>
+          <div className="risk-value"><span>Daily loss limit</span><strong>{settings.dailyLossLimit.toFixed(2)} units</strong></div><div className="risk-value"><span>Take profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} units</strong></div>
           <div className="risk-value"><span>Loss limit usage</span><strong>Not connected</strong></div>
           <button className="secondary-button" onClick={() => setTab('settings')}>Adjust settings</button>
         </div>
       </section>
 
       <section className="panel market-scanner">
-        <div className="panel-title"><div><div className="section-heading">MARKET PROFITABILITY SCANNER</div><p className="muted">All eligible markets · live one-tick DIGITDIFF quotes · settled paper outcomes.</p></div><span className="live-dot">{settings.currency ? 'SCANNING' : 'SET CURRENCY'}</span></div>
+        <div className="panel-title"><div><div className="section-heading">CROSS-MARKET RESEARCH SCANNER</div><p className="muted">All eligible markets · live one-tick DIGITDIFF quotes · settled paper outcomes.</p></div><span className="live-dot">{settings.currency ? 'SCANNING' : 'SET CURRENCY'}</span></div>
         {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed win rate (100+ outcomes)</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% observed win rate from {highestWinRateMarket.total} settled paper outcomes</small></div>}
         {bestMarket ? <div className="scanner-leader"><span>Best profitability-qualified candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed win rate · barrier {bestMarket.quote!.barrier} · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} conservative EV per contract</small></div> : <p className="muted">No market has met every profitability gate yet: at least 100 settled paper outcomes for the exact quoted barrier, a fresh proposal quote in your account currency, and positive conservative expected value. The scanner will not call an under-sampled market profitable.</p>}
         <div className="table-wrap"><table><thead><tr><th>Market</th><th>Barrier</th><th>Settled / matched</th><th>Strategy win rate</th><th>Quoted-barrier win rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Conservative EV</th><th>Gate</th></tr></thead><tbody>
@@ -653,10 +737,43 @@ function App() {
       </section>
 
       <section className="panel action-panel">
-        <div><div className="section-heading">BOT CONTROL</div><p className="muted">Execution is locked until the authenticated backend, persistent risk ledger and payout validation are implemented.</p></div>
-        <div className="control-row"><button className="start-button" disabled title="Execution backend is not connected">START BOT</button><button className="stop-button" disabled title="No execution worker is connected">STOP BOT</button></div>
-        <small className="lock-note">Research feed is active. Live trading is not enabled.</small>
+        <div><div className="section-heading">EXECUTION CONTROL</div><p className="muted">Research continues independently of execution. Live orders remain locked until account authorization, settlement reconciliation and server-enforced risk controls are validated.</p></div>
+        <div className="control-row"><button className="start-button" disabled title="Execution backend is not connected">START ANALYSIS</button><button className="stop-button" disabled title="No execution worker is connected">STOP EXECUTION</button></div>
+        <small className="lock-note">RESEARCH FEED ACTIVE · LIVE EXECUTION DISABLED</small>
       </section>
+    </>}
+
+    {tab === 'engine' && <>
+      <section className="panel engine-hero">
+        <div className="section-heading">LOTUS DIGIT INTELLIGENCE</div><h2>Choose a research engine</h2>
+        <p className="muted">Both engines score the next observed tick. These are frequency baselines, not proven predictive edges.</p>
+        <div className="strategy-switch">
+          <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
+          <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
+        </div>
+        <div className="research-signal">
+          <span className="section-heading">{activeStrategy} · {marketName}</span>
+          <div className="signal-digit">{activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—')}</div>
+          <div className="signal-label">TARGET DIGIT</div><div className="confidence-track"><i style={{ width: (stats.sample ? Math.min(100, (activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100) : 0) + '%' }} /></div>
+          <div className="candidate-row"><span>Observed baseline success rate</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100).toFixed(2) + '%' : '—'}</strong></div>
+          <div className="candidate-row"><span>Historical sample</span><strong>{stats.sample} / {settings.windowSize}</strong></div>
+          <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
+          <p className="muted">Differs selects the least frequent digit; Matches selects the most frequent. These choices are descriptive baselines, can overfit noise, and do not mean any digit is due.</p>
+        </div>
+        <div className="control-row research-controls">
+          <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START {activeStrategy} ANALYSIS</button>
+          <button className="stop-button" onClick={() => setAnalysisRunning(false)} disabled={!analysisRunning}>STOP ANALYSIS</button>
+        </div>
+        <small className="lock-note">{analysisRunning ? activeStrategy + ' paper research running · no Deriv orders sent' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
+      </section>
+      <section className="panel"><div className="section-heading">LIVE TRADING MASTER SWITCH</div><div className="master-row"><div><strong>Live execution</strong><p className="muted">Locked pending account authorization, verified settlement reconciliation and server-enforced risk controls.</p></div><div className="master-actions"><button className="master-switch" disabled aria-pressed={liveMaster}>OFF · LOCKED</button><button className="stop-button" onClick={() => setLiveMaster(false)}>STOP EXECUTION</button></div></div></section>
+      <section className="panel"><div className="section-heading">CROSS-MARKET RESEARCH</div><p className="muted">Public market ticks are collected while this dashboard is open. Closing the browser stops the live collector in this version.</p><div className="candidate-row"><span>Markets subscribed</span><strong>{symbols.length}</strong></div><div className="candidate-row"><span>Live tick stream</span><strong>{status}</strong></div><div className="candidate-row"><span>Persisted research decisions</span><strong>{researchDecisions.length}</strong></div></section>
+    </>}
+
+    {tab === 'wins' && <>
+      <section className="stats-grid wins-grid">{(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>{strategy} PAPER WIN RATE</span><strong>{rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>{wins} wins · {rows.length - wins} losses · {rows.length} settled</small></div>; })}</section>
+      <section className="overview-grid"><div className="panel metric-card"><span>VERIFIED LIVE P/L</span><strong>—</strong><small>Unavailable: live trading is disabled.</small></div><div className="panel metric-card"><span>LIVE ACCOUNT WIN RATE</span><strong>—</strong><small>No live contracts have been executed or settled.</small></div></section>
+      <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>{(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>{strategy}</td><td>{rows.length}</td><td>{wins}</td><td>{rows.length-wins}</td><td>{rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
     </>}
 
     {tab === 'activity' && <>
@@ -676,6 +793,14 @@ function App() {
         <div className="table-wrap"><table><thead><tr><th>Time (UTC)</th><th>Quote</th><th>Last digit</th></tr></thead><tbody>
           {ticks.slice(-25).reverse().map((tick) => <tr key={tick.id}><td>{new Date(tick.epoch * 1000).toLocaleTimeString()}</td><td>{tick.quote}</td><td>{digitFromQuote(tick.quote, pipSize)}</td></tr>)}
           {!ticks.length && <tr><td colSpan={3} className="empty">Waiting for tick data…</td></tr>}
+        </tbody></table></div>
+      </section>
+      <section className="panel">
+        <div className="section-heading">DIFFERS / MATCHES RESEARCH JOURNAL</div>
+        <p className="muted">Each decision is saved before its next-tick result is known, then updated when the next tick arrives. Unresolved decisions remain pending if the feed disconnects.</p>
+        <div className="table-wrap"><table><thead><tr><th>Predicted (UTC)</th><th>Market</th><th>Engine</th><th>Target</th><th>Next digit</th><th>Empirical rate</th><th>Result</th></tr></thead><tbody>
+          {researchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
+          {!researchDecisions.length && <tr><td colSpan={7} className="empty">No research decisions yet. Start either engine after a full analysis window has loaded.</td></tr>}
         </tbody></table></div>
       </section>
       <section className="panel">
@@ -699,6 +824,10 @@ function App() {
           <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.dailyLossLimit} onChange={(event) => changeSetting('dailyLossLimit', Number(event.target.value))} /></div>
           <small>Hard stop: the execution service must block new purchases once the realised daily net loss reaches this amount.</small>
         </label>
+        <label className="setting-field">Take profit target (account currency)
+          <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.takeProfitLimit} onChange={(event) => changeSetting('takeProfitLimit', Number(event.target.value))} /></div>
+          <small>Stored risk preference only. It is not an active trading stop while execution is locked.</small>
+        </label>
         <label className="setting-field">Deriv account currency
           <input type="text" maxLength={20} autoCapitalize="characters" placeholder="e.g. USD, EUR, USDT" value={settings.currency} onChange={(event) => changeSetting('currency', event.target.value.trim().toUpperCase())} />
           <small>Enter the exact currency displayed in your Deriv account. Do not guess. This is required for comparable proposal prices.</small>
@@ -711,6 +840,13 @@ function App() {
         <div className="settings-actions"><button className="secondary-button" onClick={() => setSettings(DEFAULT_SETTINGS)}>Restore defaults</button><span className="default-note">Defaults: 1.00 stake · 2.00 daily loss</span></div>
       </section>
       <section className="panel safety-panel">
+        <div className="section-heading">DERIV ACCOUNT CONNECTION</div>
+        <div className="candidate-row"><span>Public market data</span><strong>{status}</strong></div>
+        <div className="candidate-row"><span>Trading account</span><strong>Not connected</strong></div>
+        <p className="muted">Account authorization is not yet enabled. Do not paste an API token into this page. The account connection will use a secure authorization flow with explicitly scoped permissions, server-side safeguards and verified account identity.</p>
+        <button className="secondary-button" disabled title="Secure Deriv authorization flow is not implemented yet">CONNECT DERIV ACCOUNT · LOCKED</button>
+      </section>
+      <section className="panel safety-panel">
         <div className="section-heading">EXECUTION SAFETY</div>
         <ul>
           <li>Live trading remains disabled. The scanner only requests proposal prices and records paper outcomes.</li>
@@ -721,7 +857,7 @@ function App() {
       </section>
     </>}
 
-    <footer>DDPE private research interface · {backendStatus} · no order execution in this build</footer>
+    <footer>LOTUS ENGINE · {status === 'CONNECTED' ? 'LIVE MARKET DATA' : 'HISTORICAL MODE'} · EXECUTION LOCKED · {backendStatus}</footer>
   </main>;
 }
 

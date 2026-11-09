@@ -1,9 +1,18 @@
 {
-  "name": "Deriv Digit AI",
-  "short_name": "Digit AI",
-  "start_url": ".",
+  "name": "Lotus | Deriv Digit Research",
+  "short_name": "Lotus",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#050805",
-  "theme_color": "#07110b",
-  "icons": []
+  "background_color": "#0d0d12",
+  "theme_color": "#0d0d12",
+  "description": "Deriv digit research and paper-performance journal.",
+  "icons": [
+    {
+      "src": "/lotus.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }

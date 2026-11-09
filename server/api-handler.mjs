@@ -99,7 +99,9 @@ async function handle(request) {
         to_regclass('public.ddpe_trades') IS NOT NULL AS trades,
         to_regclass('public.ddpe_daily_risk') IS NOT NULL AS daily_risk,
         to_regclass('public.ddpe_login_limits') IS NOT NULL AS login_limits,
+        to_regclass('public.ddpe_research_decisions') IS NOT NULL AS research_decisions,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'account_currency') AS account_currency,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'take_profit_limit') AS take_profit_limit,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_ticks' AND column_name = 'tick_uid') AS tick_identity,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_prediction_choices' AND column_name = 'choice_uid') AS choice_identity`;
       checks.schema_ready = Boolean(schema[0] && Object.values(schema[0]).every(Boolean));
@@ -150,9 +152,9 @@ async function handle(request) {
 
   if (method === "GET" && path === "/settings") {
     const sql = getSql();
-    const rows = await sql`SELECT stake::text, daily_loss_limit::text, analysis_window, account_currency FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
-    const row = rows[0] || { stake: "1", daily_loss_limit: "2", analysis_window: 100, account_currency: "" };
-    return json({ stake: Number(row.stake), dailyLossLimit: Number(row.daily_loss_limit), windowSize: Number(row.analysis_window), currency: row.account_currency || "" });
+    const rows = await sql`SELECT stake::text, daily_loss_limit::text, take_profit_limit::text, analysis_window, account_currency FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
+    const row = rows[0] || { stake: "1", daily_loss_limit: "2", take_profit_limit: "5", analysis_window: 100, account_currency: "" };
+    return json({ stake: Number(row.stake), dailyLossLimit: Number(row.daily_loss_limit), takeProfitLimit: Number(row.take_profit_limit), windowSize: Number(row.analysis_window), currency: row.account_currency || "" });
   }
 
   if (method === "PUT" && path === "/settings") {
@@ -161,21 +163,23 @@ async function handle(request) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
     const stake = Number(body?.stake);
     const dailyLossLimit = Number(body?.dailyLossLimit);
+    const takeProfitLimit = Number(body?.takeProfitLimit);
     const windowSize = Number(body?.windowSize);
     const currency = typeof body?.currency === 'string' ? body.currency.trim().toUpperCase() : '';
     if (currency && !/^[A-Z0-9]{2,20}$/.test(currency)) return json({ error: "Invalid account currency code." }, 400);
     if (!Number.isFinite(stake) || stake <= 0 || stake > 1000 ||
         !Number.isFinite(dailyLossLimit) || dailyLossLimit <= 0 || dailyLossLimit > 10000 ||
+        !Number.isFinite(takeProfitLimit) || takeProfitLimit <= 0 || takeProfitLimit > 10000 ||
         !Number.isInteger(windowSize) || windowSize < 50 || windowSize > 5000) {
       return json({ error: "Settings are outside permitted ranges." }, 400);
     }
     const sql = getSql();
-    await sql`INSERT INTO ddpe_settings (owner_id, stake, daily_loss_limit, analysis_window, account_currency)
-      VALUES (${OWNER_ID}, ${stake}, ${dailyLossLimit}, ${windowSize}, ${currency || null})
+    await sql`INSERT INTO ddpe_settings (owner_id, stake, daily_loss_limit, take_profit_limit, analysis_window, account_currency)
+      VALUES (${OWNER_ID}, ${stake}, ${dailyLossLimit}, ${takeProfitLimit}, ${windowSize}, ${currency || null})
       ON CONFLICT (owner_id) DO UPDATE SET stake = EXCLUDED.stake,
-      daily_loss_limit = EXCLUDED.daily_loss_limit,
+      daily_loss_limit = EXCLUDED.daily_loss_limit, take_profit_limit = EXCLUDED.take_profit_limit,
       analysis_window = EXCLUDED.analysis_window, account_currency = EXCLUDED.account_currency, updated_at = NOW()`;
-    return json({ ok: true, stake, dailyLossLimit, windowSize, currency });
+    return json({ ok: true, stake, dailyLossLimit, takeProfitLimit, windowSize, currency });
   }
 
   if (method === "POST" && path === "/ticks") {
@@ -252,6 +256,71 @@ async function handle(request) {
         is_correct = EXCLUDED.is_correct,
         analysis_window = EXCLUDED.analysis_window`;
     return json({ ok: true, accepted: choices.length });
+  }
+
+  if (method === "GET" && path === "/research") {
+    const sql = getSql();
+    const rows = await sql`SELECT decision_uid, symbol, strategy, target_digit, predicted_at_epoch,
+      settled_at_epoch, outcome_digit, is_correct, analysis_window, sample_size, empirical_rate, model_version
+      FROM public.ddpe_research_decisions
+      WHERE owner_id = ${OWNER_ID}
+      ORDER BY predicted_at_epoch DESC LIMIT 1000`;
+    const summary = await sql`SELECT strategy, COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE settled_at_epoch IS NOT NULL)::int AS settled,
+      COUNT(*) FILTER (WHERE is_correct = TRUE)::int AS wins,
+      COUNT(*) FILTER (WHERE is_correct = FALSE)::int AS losses
+      FROM public.ddpe_research_decisions WHERE owner_id = ${OWNER_ID} GROUP BY strategy`;
+    return json({ decisions: rows.map((row) => ({
+      id: row.decision_uid, symbol: row.symbol, strategy: row.strategy,
+      targetDigit: Number(row.target_digit), predictedEpoch: Number(row.predicted_at_epoch),
+      settledEpoch: row.settled_at_epoch == null ? null : Number(row.settled_at_epoch),
+      outcomeDigit: row.outcome_digit == null ? null : Number(row.outcome_digit),
+      correct: row.is_correct == null ? null : Boolean(row.is_correct),
+      analysisWindow: Number(row.analysis_window), sampleSize: Number(row.sample_size),
+      empiricalRate: Number(row.empirical_rate), modelVersion: row.model_version
+    })), summary: summary.map((row) => ({ strategy: row.strategy, total: Number(row.total),
+      settled: Number(row.settled), wins: Number(row.wins), losses: Number(row.losses) })) });
+  }
+
+  if (method === "POST" && path === "/research") {
+    assertSameOrigin(request);
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
+    const decisions = Array.isArray(body?.decisions) ? body.decisions : [body];
+    if (!decisions.length || decisions.length > 100 || decisions.some((item) =>
+      typeof item?.decision_uid !== "string" || item.decision_uid.length < 8 || item.decision_uid.length > 160 ||
+      typeof item?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(item.symbol) ||
+      !["DIFFERS", "MATCHES"].includes(item.strategy) ||
+      !Number.isInteger(item.target_digit) || item.target_digit < 0 || item.target_digit > 9 ||
+      !Number.isSafeInteger(item.predicted_at_epoch) ||
+      (item.settled_at_epoch != null && (!Number.isSafeInteger(item.settled_at_epoch) || item.settled_at_epoch <= item.predicted_at_epoch)) ||
+      (item.outcome_digit != null && (!Number.isInteger(item.outcome_digit) || item.outcome_digit < 0 || item.outcome_digit > 9)) ||
+      (item.is_correct != null && typeof item.is_correct !== "boolean") ||
+      !Number.isInteger(item.analysis_window) || item.analysis_window < 50 || item.analysis_window > 5000 ||
+      !Number.isInteger(item.sample_size) || item.sample_size < 0 ||
+      !Number.isFinite(item.empirical_rate) || item.empirical_rate < 0 || item.empirical_rate > 1 ||
+      typeof item.model_version !== "string" || item.model_version.length > 80 ||
+      ((item.settled_at_epoch == null) !== (item.outcome_digit == null)) ||
+      ((item.settled_at_epoch == null) !== (item.is_correct == null)))) {
+      return json({ error: "Invalid research decision batch." }, 400);
+    }
+    const sql = getSql();
+    await sql`INSERT INTO public.ddpe_research_decisions
+      (owner_id, decision_uid, symbol, strategy, target_digit, predicted_at_epoch,
+       settled_at_epoch, outcome_digit, is_correct, analysis_window, sample_size, empirical_rate, model_version)
+      SELECT ${OWNER_ID}, item.decision_uid, item.symbol, item.strategy, item.target_digit,
+        item.predicted_at_epoch, item.settled_at_epoch, item.outcome_digit, item.is_correct,
+        item.analysis_window, item.sample_size, item.empirical_rate, item.model_version
+      FROM jsonb_to_recordset(${JSON.stringify(decisions)}::jsonb)
+      AS item(decision_uid text, symbol text, strategy text, target_digit smallint,
+        predicted_at_epoch bigint, settled_at_epoch bigint, outcome_digit smallint,
+        is_correct boolean, analysis_window integer, sample_size integer,
+        empirical_rate numeric, model_version text)
+      ON CONFLICT (owner_id, decision_uid) DO UPDATE SET
+        settled_at_epoch = EXCLUDED.settled_at_epoch,
+        outcome_digit = EXCLUDED.outcome_digit,
+        is_correct = EXCLUDED.is_correct`;
+    return json({ ok: true, accepted: decisions.length });
   }
 
   return json({ error: "Not found." }, 404);
