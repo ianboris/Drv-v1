@@ -582,18 +582,18 @@ function App() {
     ticksRef.current = [];
   };
 
-  if (authChecking) return <main className="login-shell"><section className="panel login-panel"><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Checking secure session</h1><p className="muted">{backendStatus}</p></section></main>;
-  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="eyebrow">DDPE PRIVATE ACCESS</div><h1>Sign in</h1><p className="muted">Use the private app password configured in your deployment's environment variables. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
+  if (authChecking) return <main className="login-shell"><section className="panel login-panel"><div className="eyebrow">LOTUS PRIVATE ACCESS</div><h1>Checking secure session</h1><p className="muted">{backendStatus}</p></section></main>;
+  if (!authenticated) return <main className="login-shell"><form className="panel login-panel" onSubmit={submitLogin}><div className="eyebrow">LOTUS PRIVATE ACCESS</div><h1>Sign in</h1><p className="muted">Use the private app password configured in your deployment's environment variables. This is not your Deriv API token.</p><label className="setting-field">App password<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>{loginError && <div className="error" role="alert">{loginError}</div>}<button className="secondary-button" type="submit">Sign in</button><small className="muted">Backend: {backendStatus}</small></form></main>;
 
   return <main>
     <header className="topbar">
-      <div><div className="eyebrow">DDPE · DERIV DIFFERS</div><h1>Digit Prediction Engine</h1><p className="subhead">Live market research and risk controls</p></div>
+      <div><div className="eyebrow">LOTUS · DERIV RESEARCH</div><h1>Lotus</h1><p className="subhead">Deriv digit intelligence · research first</p></div>
       <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
       <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button>
-      <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>Activity</button>
+      <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>Journal</button>
       <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Settings</button>
     </nav>
 
@@ -611,7 +611,7 @@ function App() {
 
       <section className="overview-grid">
         <div className="panel decision-panel">
-          <div className="section-heading">DIFFERS RESEARCH STATUS</div>
+          <div className="section-heading">DIFFERS SIGNAL RESEARCH</div>
           <div className="decision">COLLECTING DATA</div>
           <p className="muted">No live order is being sent. The current repository has no authenticated execution service or validated signal model.</p>
           <div className="divider" />
@@ -630,7 +630,7 @@ function App() {
       </section>
 
       <section className="panel market-scanner">
-        <div className="panel-title"><div><div className="section-heading">MARKET PROFITABILITY SCANNER</div><p className="muted">All eligible markets · live one-tick DIGITDIFF quotes · settled paper outcomes.</p></div><span className="live-dot">{settings.currency ? 'SCANNING' : 'SET CURRENCY'}</span></div>
+        <div className="panel-title"><div><div className="section-heading">CROSS-MARKET RESEARCH SCANNER</div><p className="muted">All eligible markets · live one-tick DIGITDIFF quotes · settled paper outcomes.</p></div><span className="live-dot">{settings.currency ? 'SCANNING' : 'SET CURRENCY'}</span></div>
         {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed win rate (100+ outcomes)</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% observed win rate from {highestWinRateMarket.total} settled paper outcomes</small></div>}
         {bestMarket ? <div className="scanner-leader"><span>Best profitability-qualified candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed win rate · barrier {bestMarket.quote!.barrier} · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} conservative EV per contract</small></div> : <p className="muted">No market has met every profitability gate yet: at least 100 settled paper outcomes for the exact quoted barrier, a fresh proposal quote in your account currency, and positive conservative expected value. The scanner will not call an under-sampled market profitable.</p>}
         <div className="table-wrap"><table><thead><tr><th>Market</th><th>Barrier</th><th>Settled / matched</th><th>Strategy win rate</th><th>Quoted-barrier win rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Conservative EV</th><th>Gate</th></tr></thead><tbody>
@@ -653,9 +653,9 @@ function App() {
       </section>
 
       <section className="panel action-panel">
-        <div><div className="section-heading">BOT CONTROL</div><p className="muted">Execution is locked until the authenticated backend, persistent risk ledger and payout validation are implemented.</p></div>
-        <div className="control-row"><button className="start-button" disabled title="Execution backend is not connected">START BOT</button><button className="stop-button" disabled title="No execution worker is connected">STOP BOT</button></div>
-        <small className="lock-note">Research feed is active. Live trading is not enabled.</small>
+        <div><div className="section-heading">EXECUTION CONTROL</div><p className="muted">Research continues independently of execution. Live orders remain locked until account authorization, settlement reconciliation and server-enforced risk controls are validated.</p></div>
+        <div className="control-row"><button className="start-button" disabled title="Execution backend is not connected">START ANALYSIS</button><button className="stop-button" disabled title="No execution worker is connected">STOP EXECUTION</button></div>
+        <small className="lock-note">RESEARCH FEED ACTIVE · LIVE EXECUTION DISABLED</small>
       </section>
     </>}
 
@@ -721,7 +721,7 @@ function App() {
       </section>
     </>}
 
-    <footer>DDPE private research interface · {backendStatus} · no order execution in this build</footer>
+    <footer>Lotus private research interface · {backendStatus} · no order execution in this build</footer>
   </main>;
 }
 
