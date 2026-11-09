@@ -5,3 +5,32 @@
 .login-shell{min-height:100vh;display:grid;place-items:center}.login-panel{width:min(440px,100%);padding:24px}.login-panel h1{margin:12px 0}.login-panel .setting-field{margin:22px 0}.login-panel input{width:100%;padding:12px;border:1px solid #294732;border-radius:9px;background:#09130c;color:#eef8f0}.login-panel .secondary-button{width:100%;padding:13px}.login-panel small{display:block;margin-top:16px}.header-actions{display:flex;align-items:center;gap:10px}.header-actions .secondary-button{margin:0}@media(max-width:500px){.header-actions{align-items:flex-end;flex-direction:column;gap:7px}.header-actions .secondary-button{padding:7px 9px}}
 
 .scanner-leader{display:grid;gap:5px;margin:12px 0;padding:13px;border:1px solid #294732;border-radius:11px;background:#0a180e}.scanner-leader span{color:#8fb69a;font:700 10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em}.scanner-leader strong{color:#e7ffeb;font-size:19px}.scanner-leader small{color:#a8b7ab;font-size:11px;line-height:1.5}.text-button{border:0;padding:0;background:transparent;color:#a9e8b8;text-align:left;text-decoration:underline;text-underline-offset:3px}.setting-field>input{width:100%;padding:11px 12px;border-radius:10px;border:1px solid #294732;background:#09130c;color:#eef8f0}.market-scanner .table-wrap{max-height:520px;overflow:auto}.market-scanner td{white-space:nowrap}
+
+/* Lotus identity refresh */
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f4f1fa;background:#0d0d12}
+body{background:radial-gradient(ellipse at 82% -10%,#292039 0%,#111019 34%,#0d0d12 72%)}
+h1{font-family:"Iowan Old Style","Bodoni 72","Didot",Georgia,serif;font-weight:500;letter-spacing:.015em}
+.eyebrow,.section-heading{color:#b9a4d8;letter-spacing:.18em}
+.panel,.error{border-color:#302a3a;background:rgba(22,22,31,.94);box-shadow:0 14px 36px #0005}
+.tabs{border-color:#302a3a;background:#12111a}
+.tabs button.active{background:#30263e;color:#f4eaff}
+.status{border-color:#594b32;background:#241d12;color:#ecd49a}
+.status.online{border-color:#4d4262;background:#211a2c;color:#d8c2f2}
+.status.online i{background:#b69ad9}
+select,.input-wrap,.login-panel input,.setting-field>input{border-color:#40354d;background:#111019;color:#f4f1fa}
+.secondary-button{border-color:#59496d;background:#282033;color:#e7d8f8}
+.start-button{background:#58416f;color:#fff}
+.stop-button{background:#602a36;color:#ffe0e7}
+.digits span{border-color:#393044;color:#d7cbe4}
+.digits .last{outline-color:#c2a5e8}
+.bar-track{background:#292333}
+.bar-track i{background:#a88acb}
+.accuracy-strip{border-color:#59496d;background:linear-gradient(110deg,#292033,#17141f)}
+.accuracy-strip>strong{color:#e7d8f8}
+.scanner-leader{border-color:#443653;background:#1b1723}
+.scanner-leader span{color:#c0a7dc}
+.scanner-leader strong{color:#f3eaff}
+.text-button{color:#d7baf5}
+th{color:#c2a5e8}
+.result-win{color:#9cddb2}
+@media(max-width:720px){main{padding:16px 12px calc(28px + env(safe-area-inset-bottom))}.topbar{align-items:center}.panel{border-radius:17px}}
