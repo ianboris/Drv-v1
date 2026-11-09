@@ -128,7 +128,10 @@ function sessionCookie(token, maxAge = SESSION_SECONDS) {
 
 async function handle(request) {
   const url = new URL(request.url);
-  const path = url.pathname.replace(/^\/api(?:\/|$)/, "/").replace(/\/$/, "") || "/";
+  const routeOverride = url.searchParams.get("__route");
+  const path = routeOverride
+    ? `/${routeOverride.replace(/^\\/+/, "").replace(/\\/+$/, "")}`
+    : url.pathname.replace(/^\\/api(?:\\/|$)/, "/").replace(/\\/$/, "") || "/";
   const method = request.method.toUpperCase();
 
 
