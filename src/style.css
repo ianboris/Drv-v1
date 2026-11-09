@@ -176,7 +176,3 @@ main:not(.login-shell) .tabs button:hover { background: #211b2b; color: #f4eaff;
 .overview-intro .execution-lock{font-size:9px}
 @media(max-width:850px){.overview-money-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.overview-intro{align-items:flex-start;flex-direction:column}.overview-money-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.money-card{min-height:132px;padding:12px}.money-card strong{font-size:21px}}
-
-/* Crash/Boom scalper is a separate execution module */
-.tabs{grid-template-columns:repeat(6,minmax(0,1fr))}
-@media(max-width:620px){.tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}
