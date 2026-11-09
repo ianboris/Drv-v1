@@ -2,12 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
 
-const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim();
-// Use the registered Deriv application ID as supplied; do not assume a numeric format.
-const DERIV_APP_ID_VALID = DERIV_APP_ID.length > 0;
-const WS = DERIV_APP_ID_VALID
-  ? `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`
-  : '';
+// Public, read-only market-data endpoint for the current Deriv API.
+// No App ID or account token is required for public symbols, ticks, history, or proposals.
+const DERIV_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
 type Settings = { stake: number; dailyLossLimit: number; windowSize: number; currency: string };
@@ -99,11 +96,6 @@ function App() {
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
-    if (!DERIV_APP_ID_VALID) {
-      setStatus('CONFIGURATION REQUIRED');
-      setError('Deriv connection is disabled. Set VITE_DERIV_APP_ID to your registered Deriv application ID in Vercel and redeploy.');
-      return;
-    }
     ticksBySymbolRef.current.clear();
     pipSizesBySymbolRef.current.clear();
     pendingChoicesRef.current.clear();
@@ -122,8 +114,8 @@ function App() {
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
-      console.info('[DERIV] Opening WebSocket connection', { endpoint: 'wss://ws.derivws.com/websockets/v3', appIdConfigured: DERIV_APP_ID_VALID });
-      socket = new WebSocket(WS);
+      console.info('[DERIV] Opening public market-data WebSocket', { endpoint: DERIV_WS_URL });
+      socket = new WebSocket(DERIV_WS_URL);
       ws.current = socket;
       socket.onopen = () => {
         if (!alive || !socket) return;
