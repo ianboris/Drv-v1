@@ -101,6 +101,7 @@ async function handle(request) {
         to_regclass('public.ddpe_login_limits') IS NOT NULL AS login_limits,
         to_regclass('public.ddpe_research_decisions') IS NOT NULL AS research_decisions,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'account_currency') AS account_currency,
+        EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'take_profit_limit') AS take_profit_limit,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_ticks' AND column_name = 'tick_uid') AS tick_identity,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_prediction_choices' AND column_name = 'choice_uid') AS choice_identity`;
       checks.schema_ready = Boolean(schema[0] && Object.values(schema[0]).every(Boolean));
@@ -151,9 +152,9 @@ async function handle(request) {
 
   if (method === "GET" && path === "/settings") {
     const sql = getSql();
-    const rows = await sql`SELECT stake::text, daily_loss_limit::text, analysis_window, account_currency FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
-    const row = rows[0] || { stake: "1", daily_loss_limit: "2", analysis_window: 100, account_currency: "" };
-    return json({ stake: Number(row.stake), dailyLossLimit: Number(row.daily_loss_limit), windowSize: Number(row.analysis_window), currency: row.account_currency || "" });
+    const rows = await sql`SELECT stake::text, daily_loss_limit::text, take_profit_limit::text, analysis_window, account_currency FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
+    const row = rows[0] || { stake: "1", daily_loss_limit: "2", take_profit_limit: "5", analysis_window: 100, account_currency: "" };
+    return json({ stake: Number(row.stake), dailyLossLimit: Number(row.daily_loss_limit), takeProfitLimit: Number(row.take_profit_limit), windowSize: Number(row.analysis_window), currency: row.account_currency || "" });
   }
 
   if (method === "PUT" && path === "/settings") {
@@ -162,21 +163,23 @@ async function handle(request) {
     try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
     const stake = Number(body?.stake);
     const dailyLossLimit = Number(body?.dailyLossLimit);
+    const takeProfitLimit = Number(body?.takeProfitLimit);
     const windowSize = Number(body?.windowSize);
     const currency = typeof body?.currency === 'string' ? body.currency.trim().toUpperCase() : '';
     if (currency && !/^[A-Z0-9]{2,20}$/.test(currency)) return json({ error: "Invalid account currency code." }, 400);
     if (!Number.isFinite(stake) || stake <= 0 || stake > 1000 ||
         !Number.isFinite(dailyLossLimit) || dailyLossLimit <= 0 || dailyLossLimit > 10000 ||
+        !Number.isFinite(takeProfitLimit) || takeProfitLimit <= 0 || takeProfitLimit > 10000 ||
         !Number.isInteger(windowSize) || windowSize < 50 || windowSize > 5000) {
       return json({ error: "Settings are outside permitted ranges." }, 400);
     }
     const sql = getSql();
-    await sql`INSERT INTO ddpe_settings (owner_id, stake, daily_loss_limit, analysis_window, account_currency)
-      VALUES (${OWNER_ID}, ${stake}, ${dailyLossLimit}, ${windowSize}, ${currency || null})
+    await sql`INSERT INTO ddpe_settings (owner_id, stake, daily_loss_limit, take_profit_limit, analysis_window, account_currency)
+      VALUES (${OWNER_ID}, ${stake}, ${dailyLossLimit}, ${takeProfitLimit}, ${windowSize}, ${currency || null})
       ON CONFLICT (owner_id) DO UPDATE SET stake = EXCLUDED.stake,
-      daily_loss_limit = EXCLUDED.daily_loss_limit,
+      daily_loss_limit = EXCLUDED.daily_loss_limit, take_profit_limit = EXCLUDED.take_profit_limit,
       analysis_window = EXCLUDED.analysis_window, account_currency = EXCLUDED.account_currency, updated_at = NOW()`;
-    return json({ ok: true, stake, dailyLossLimit, windowSize, currency });
+    return json({ ok: true, stake, dailyLossLimit, takeProfitLimit, windowSize, currency });
   }
 
   if (method === "POST" && path === "/ticks") {
