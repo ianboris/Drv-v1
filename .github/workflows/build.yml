@@ -26,11 +26,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Install dependencies
         run: npm install
       - name: Check Vercel backend function syntax
-        run: node --check server/api-handler.mjs && node --check 'api/[...path].mjs'
+        run: node --check server/api-handler.mjs && node --check api/index.mjs
       - name: Run API smoke tests
         run: node --test tests/api.test.mjs
       - name: Run TypeScript and Vite production build
