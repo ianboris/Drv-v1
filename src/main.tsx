@@ -7,7 +7,7 @@ import './style.css';
 const DERIV_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
-type Settings = { stake: number; dailyLossLimit: number; windowSize: number; currency: string };
+type Settings = { stake: number; dailyLossLimit: number; takeProfitLimit: number; windowSize: number; currency: string };
 type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
 type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
 type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpoch: number; settledEpoch: number; outcomeDigit: number; correct: boolean; analysisWindow?: number };
@@ -15,7 +15,7 @@ type ResearchStrategy = 'DIFFERS' | 'MATCHES';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
 type Tab = 'overview' | 'engine' | 'wins' | 'activity' | 'settings';
-const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, windowSize: 100, currency: '' };
+const DEFAULT_SETTINGS: Settings = { stake: 1, dailyLossLimit: 2, takeProfitLimit: 5, windowSize: 100, currency: '' };
 
 function readSettings(): Settings {
   try {
@@ -25,6 +25,7 @@ function readSettings(): Settings {
     return {
       stake: Number.isFinite(parsed.stake) && Number(parsed.stake) > 0 ? Number(parsed.stake) : 1,
       dailyLossLimit: Number.isFinite(parsed.dailyLossLimit) && Number(parsed.dailyLossLimit) > 0 ? Number(parsed.dailyLossLimit) : 2,
+      takeProfitLimit: Number.isFinite(parsed.takeProfitLimit) && Number(parsed.takeProfitLimit) > 0 ? Number(parsed.takeProfitLimit) : 5,
       windowSize: Number.isFinite(parsed.windowSize) && Number(parsed.windowSize) >= 50 ? Math.min(5000, Math.round(Number(parsed.windowSize))) : 100,
       currency: typeof parsed.currency === 'string' ? parsed.currency.trim().toUpperCase() : ''
     };
@@ -472,7 +473,7 @@ function App() {
       if (!response.ok) throw new Error('Could not load saved settings from the backend.');
       const remote = await response.json();
       if (!active) return;
-      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), takeProfitLimit: Number(remote.takeProfitLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
       setAuthenticated(true);
       setSettingsLoaded(true);
     }).catch((reason) => { if (active) setLoginError(reason instanceof Error ? reason.message : 'Backend session check failed.'); })
@@ -542,7 +543,7 @@ function App() {
 
   useEffect(() => {
     if (!authenticated || !settingsLoaded) return;
-    if (!(settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000)) {
+    if (!(settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && settings.takeProfitLimit > 0 && settings.takeProfitLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000)) {
       setSaved(false);
       return;
     }
