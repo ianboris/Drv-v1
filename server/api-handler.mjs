@@ -99,6 +99,7 @@ async function handle(request) {
         to_regclass('public.ddpe_trades') IS NOT NULL AS trades,
         to_regclass('public.ddpe_daily_risk') IS NOT NULL AS daily_risk,
         to_regclass('public.ddpe_login_limits') IS NOT NULL AS login_limits,
+        to_regclass('public.ddpe_research_decisions') IS NOT NULL AS research_decisions,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_settings' AND column_name = 'account_currency') AS account_currency,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_ticks' AND column_name = 'tick_uid') AS tick_identity,
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_prediction_choices' AND column_name = 'choice_uid') AS choice_identity`;
