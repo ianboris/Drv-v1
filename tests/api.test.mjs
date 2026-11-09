@@ -156,3 +156,42 @@ test("choice API rejects same-second-invalid fields before database access", asy
     else process.env.DDPE_SESSION_SECRET = old;
   }
 });
+
+
+test("Deriv OAuth start requires an authenticated Lotus session", async () => {
+  const old = process.env.DDPE_SESSION_SECRET;
+  process.env.DDPE_SESSION_SECRET = "s".repeat(40);
+  try {
+    const response = await api(new Request("https://example.test/api/deriv/oauth/start", {
+      method: "POST",
+      headers: { origin: "https://example.test", "content-type": "application/json" },
+      body: "{}",
+    }));
+    assert.equal(response.status, 401);
+  } finally {
+    if (old === undefined) delete process.env.DDPE_SESSION_SECRET;
+    else process.env.DDPE_SESSION_SECRET = old;
+  }
+});
+
+test("Deriv demo OTP endpoint requires an authenticated Lotus session", async () => {
+  const old = process.env.DDPE_SESSION_SECRET;
+  process.env.DDPE_SESSION_SECRET = "s".repeat(40);
+  try {
+    const response = await api(new Request("https://example.test/api/deriv/demo/otp", {
+      method: "POST",
+      headers: { origin: "https://example.test", "content-type": "application/json" },
+      body: JSON.stringify({ account_id: "VRTC123456" }),
+    }));
+    assert.equal(response.status, 401);
+  } finally {
+    if (old === undefined) delete process.env.DDPE_SESSION_SECRET;
+    else process.env.DDPE_SESSION_SECRET = old;
+  }
+});
+
+test("Deriv OAuth callback rejects a missing code and state without exposing credentials", async () => {
+  const response = await api(new Request("https://example.test/api/deriv/oauth/callback"));
+  assert.equal(response.status, 303);
+  assert.equal(response.headers.get("location"), "https://example.test/?deriv_error=invalid_callback");
+});
