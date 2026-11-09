@@ -51,6 +51,32 @@ function getStats(digits: number[]) {
   return { counts, probabilities, entropy, barrier, barrierRate: barrier >= 0 ? probabilities[barrier] : 0, sample: n };
 }
 
+const RESEARCH_QUEUE_KEY = 'lotus-research-sync-v1';
+function readResearchQueue(): Record<string, unknown>[] {
+  try { const value = JSON.parse(localStorage.getItem(RESEARCH_QUEUE_KEY) || '[]'); return Array.isArray(value) ? value : []; }
+  catch { return []; }
+}
+async function queueResearchDecision(decision: Record<string, unknown>) {
+  const id = String(decision.decision_uid || '');
+  const queue = readResearchQueue().filter(item => item.decision_uid !== id);
+  queue.push(decision);
+  try { localStorage.setItem(RESEARCH_QUEUE_KEY, JSON.stringify(queue.slice(-2000))); } catch {}
+  await flushResearchQueue();
+}
+async function flushResearchQueue() {
+  if (!navigator.onLine) return;
+  const queue = readResearchQueue();
+  if (!queue.length) return;
+  for (let offset = 0; offset < queue.length; offset += 100) {
+    const batch = queue.slice(offset, offset + 100);
+    const response = await fetch('/api/research', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decisions: batch }) });
+    if (!response.ok) throw new Error('Research sync is waiting for a connection.');
+    const sent = new Set(batch.map(item => String(item.decision_uid)));
+    const remaining = readResearchQueue().filter(item => !sent.has(String(item.decision_uid)));
+    try { localStorage.setItem(RESEARCH_QUEUE_KEY, JSON.stringify(remaining)); } catch {}
+  }
+}
+
 function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
   if (!total) return 0;
   const p = wins / total;
@@ -150,9 +176,9 @@ function App() {
             socket.close(4000, 'Heartbeat timeout');
           }, 10000);
         }, 30000);
-        // Ask Deriv only for underlyings that list DIGITDIFF as an available contract.
+        // Ask Deriv for underlyings supporting either digit contract family.
         // The current API no longer accepts product_type on active_symbols.
-        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF'], req_id: 1 }));
+        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF', 'DIGITMATCH'], req_id: 1 }));
       };
       socket.onmessage = (event) => {
         if (!alive) return;
@@ -294,7 +320,7 @@ function App() {
                     const isCorrect = pendingResearch.strategy === 'DIFFERS' ? tick.lastDigit !== pendingResearch.target_digit : tick.lastDigit === pendingResearch.target_digit;
                     const settled: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy: pendingResearch.strategy, targetDigit: pendingResearch.target_digit, predictedEpoch: pendingResearch.predicted_at_epoch, settledEpoch: epoch, outcomeDigit: tick.lastDigit, correct: isCorrect, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
                     setResearchDecisions(previous => [...previous.filter(item => item.id !== settled.id), settled].slice(-2000));
-                    fetch('/api/research', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decisions: [{ ...pendingResearch, settled_at_epoch: epoch, outcome_digit: tick.lastDigit, is_correct: isCorrect }] }) }).then(response => { if (!response.ok) throw new Error('Research journal settlement failed'); }).catch(() => setBackendStatus('Research journal sync failed'));
+                    queueResearchDecision({ ...pendingResearch, settled_at_epoch: epoch, outcome_digit: tick.lastDigit, is_correct: isCorrect }).then(() => setBackendStatus('Research journal synced')).catch(() => setBackendStatus('Research journal queued for sync'));
                     pendingResearchRef.current.delete(researchKey);
                   }
                   const pending = pendingChoicesRef.current.get(marketSymbol);
@@ -350,7 +376,7 @@ function App() {
                       pendingResearchRef.current.set(marketSymbol + ':' + strategy, pendingResearch);
                       const openDecision: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy, targetDigit, predictedEpoch: epoch, settledEpoch: null, outcomeDigit: null, correct: null, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
                       setResearchDecisions(previous => [...previous.filter(item => item.id !== openDecision.id), openDecision].slice(-2000));
-                      fetch('/api/research', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ decisions: [{ ...pendingResearch, settled_at_epoch: null, outcome_digit: null, is_correct: null }] }) }).then(response => { if (!response.ok) throw new Error('Research decision persistence failed'); }).catch(() => setBackendStatus('Research journal persistence failed'));
+                      queueResearchDecision({ ...pendingResearch, settled_at_epoch: null, outcome_digit: null, is_correct: null }).then(() => setBackendStatus('Research decision synced')).catch(() => setBackendStatus('Research decision queued for sync'));
                     }
                   }
                   if (priorDigits.length >= windowSizeRef.current) {
@@ -477,6 +503,15 @@ function App() {
       }
     }, 5000);
     return () => window.clearInterval(timer);
+  }, [authenticated]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    const flush = () => { flushResearchQueue().catch(() => setBackendStatus('Offline journal queue · awaiting sync')); };
+    window.addEventListener('online', flush);
+    const timer = window.setInterval(flush, 15000);
+    flush();
+    return () => { window.removeEventListener('online', flush); window.clearInterval(timer); };
   }, [authenticated]);
 
   useEffect(() => {
