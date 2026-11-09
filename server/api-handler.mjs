@@ -77,7 +77,7 @@ function sessionCookie(token, maxAge = SESSION_SECONDS) {
 
 async function handle(request) {
   const url = new URL(request.url);
-  const path = url.pathname.replace(/^\/api/, "").replace(/^\/.netlify\/functions\/api/, "") || "/";
+  const path = url.pathname.replace(/^\/api(?:\/|$)/, "/").replace(/\/$/, "") || "/";
   const method = request.method.toUpperCase();
 
   if (method === "GET" && path === "/health") {

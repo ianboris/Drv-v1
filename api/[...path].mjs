@@ -1,9 +1,9 @@
-import netlifyApi from "../netlify/functions/api.mjs";
+import apiHandler from "../server/api-handler.mjs";
 
 // Vercel's Node.js runtime supports the standard Web Request/Response handler.
-// Keep one API implementation shared between Netlify and Vercel.
+// Use the Vercel-only backend implementation.
 export default {
   async fetch(request) {
-    return netlifyApi(request);
+    return apiHandler(request);
   },
 };

@@ -1,48 +1,64 @@
-# Deriv Digit AI V1
+# DDPE Vercel-only application
 
-Mobile-first Vite + React + TypeScript research console.
+Mobile-first Vite + React + TypeScript research console with a Vercel Node.js API and Neon PostgreSQL persistence.
 
-## Structure
+## Runtime and deployment
 
-- `index.html`
-- `package.json`
-- `tsconfig.json`
-- `vite.config.ts`
-- `manifest.webmanifest`
-- `src/main.tsx`
-- `src/style.css`
+This repository deploys exclusively to Vercel.
+
+- Framework preset: Vite
+- Build command: `npm run build`
+- Output directory: `dist`
+- Node.js: 20 or later
+- API entry point: `api/[...path].mjs` (Vercel Web Function)
+- Backend implementation: `server/api-handler.mjs`
+- Database: Neon PostgreSQL via `@neondatabase/serverless`
 
 ## Local development
 
 ```sh
 npm install
+npm test
+npm run build
 npm run dev
 ```
 
-## Production build
+## Vercel environment variables
 
-```sh
-npm run build
-npm run preview
-```
+Configure these in Vercel Project Settings → Environment Variables for Preview and Production:
 
-The production build is written to `dist/`.
+- `DATABASE_URL`: Neon pooled PostgreSQL connection string (server-side only).
+- `DDPE_LOGIN_PASSWORD`: new private app password, at least 16 characters.
+- `DDPE_SESSION_SECRET`: random secret, at least 32 characters.
 
-## Deployment
+Never put these values in frontend code, commit them to Git, or share them in public issues. If a credential was exposed, rotate it.
 
-The app is a static Vite site. Configure the hosting provider with:
+## Neon migrations
 
-- Build command: `npm run build`
-- Publish directory: `dist`
+Run these SQL files in the Neon SQL Editor in order:
 
-## Database migrations
+1. `db/migrations/001_ddpe_core.sql`
+2. `db/migrations/002_tick_and_choice_identity.sql`
+3. `db/migrations/003_market_scanner_currency.sql`
 
-Apply these files in the Neon SQL Editor in order: `001_ddpe_core.sql`, `002_tick_and_choice_identity.sql`, then `003_market_scanner_currency.sql`. Run them as ordinary SQL scripts. Do **not** use Explain, Explain Analyze, or a query-plan tool on migrations: PostgreSQL `EXPLAIN` accepts query/DML statements, not schema-changing `ALTER TABLE` commands. Do not prepend `EXPLAIN` to migration SQL.
+Execute them as ordinary SQL scripts. Do not use Explain or Explain Analyze on schema-changing migrations.
 
-## Market scanner
+After configuring environment variables and applying migrations, deploy to Vercel and check `/api/health`. The endpoint must report database connectivity, schema readiness, and app configuration before login will work.
 
-The scanner monitors every returned `DIGITDIFF`-eligible market, records one-tick paper outcomes, requests live one-tick proposals in the configured Deriv account currency, and ranks markets by conservative estimated expected value. It requires at least 100 settled paper outcomes for the exact currently quoted barrier and uses the 95% Wilson lower confidence bound for that barrier's win probability. It also shows the overall strategy win rate separately. It does not execute contracts. Paper outcomes are not actual contract profitability; use forward testing and actual settlement records before enabling any execution.
+## API routes
 
-## Scope and limitations
+- `GET /api/health`: reports safe configuration, database connection, and schema checks.
+- `POST /api/login`: accepts the private app password and issues an HttpOnly session cookie.
+- `POST /api/logout`: clears the session cookie.
+- `GET /api/session`: checks the current session.
+- `GET /api/settings` and `PUT /api/settings`: read and save settings.
+- `POST /api/ticks`: persist validated tick batches.
+- `GET /api/choices` and `POST /api/choices`: read and persist settled paper predictions.
 
-This repository contains a public-market-data research interface. It requests public price proposals to estimate payout-aware expected value, but it does not authenticate a Deriv account, buy contracts, or execute trades. Paper prediction outcomes and digit-frequency anomalies are research metrics, not validated live profitability. Do not use them as evidence of positive expected value without chronological out-of-sample testing and payout-aware validation.
+## Research and execution boundaries
+
+This application is a market-data research and paper-prediction console. It does not authenticate a Deriv account, buy contracts, monitor real open contracts, or enforce a daily loss limit against actual contract settlements. The displayed risk settings are not a live trading risk control. Keep live execution disabled.
+
+The browser collector only runs while the dashboard is open. Vercel Functions are request-driven and are not a permanent WebSocket collection worker. The app does not provide continuous collection when the browser is closed.
+
+The scanner's observed paper win rates and expected-value estimates are not proof of a durable trading edge. Validate chronologically out of sample and against actual proposal and settlement data before considering execution.

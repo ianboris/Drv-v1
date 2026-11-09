@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import api from "../netlify/functions/api.mjs";
+import api from "../server/api-handler.mjs";
 
 test("health endpoint fails closed when Neon credentials are absent", async () => {
   const old = {
