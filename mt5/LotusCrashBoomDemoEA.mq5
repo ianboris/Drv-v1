@@ -60,6 +60,13 @@ int OnInit()
       Print("LOTUS SAFETY: This EA refuses to run on a real-money account.");
       return INIT_FAILED;
    }
+   string symbolName = _Symbol;
+   StringToLower(symbolName);
+   if(StringFind(symbolName, "crash") < 0 && StringFind(symbolName, "boom") < 0)
+   {
+      Print("LOTUS SAFETY: Attach this EA only to a Crash or Boom symbol.");
+      return INIT_FAILED;
+   }
    if(Lots <= 0 || FastEMA < 2 || SlowEMA <= FastEMA || MaxDailyLoss <= 0 || MaxTradesPerDay < 1)
       return INIT_PARAMETERS_INCORRECT;
    fastHandle = iMA(_Symbol, PERIOD_CURRENT, FastEMA, 0, MODE_EMA, PRICE_CLOSE);
@@ -87,7 +94,9 @@ void OnTick()
    datetime bar = iTime(_Symbol, PERIOD_CURRENT, 0);
    if(bar == 0 || bar == lastBar) return;
    lastBar = bar;
-   double fast[3], slow[3];
+   double fast[], slow[];
+   ArrayResize(fast, 3);
+   ArrayResize(slow, 3);
    ArraySetAsSeries(fast, true);
    ArraySetAsSeries(slow, true);
    if(CopyBuffer(fastHandle, 0, 0, 3, fast) != 3 || CopyBuffer(slowHandle, 0, 0, 3, slow) != 3) return;

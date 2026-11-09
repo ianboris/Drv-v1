@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './scalper.css';
 
 type Market = { symbol: string; name: string; supported: boolean | null; contracts: string[]; ticks: number[]; last: number | null; updatedAt: number | null; error?: string };
@@ -52,7 +52,6 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
   const [botRunning, setBotRunning] = useState(false);
   const [trades, setTrades] = useState<Trade[]>(loadTrades);
   const [dailyPnl, setDailyPnl] = useState(0);
-  const [lastTradeAt, setLastTradeAt] = useState(0);
   const [pendingMessage, setPendingMessage] = useState('No trade submitted');
   const [lastSignal, setLastSignal] = useState('Waiting for market scan');
   const publicSocket = useRef<WebSocket | null>(null);
@@ -62,6 +61,8 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
   const requestId = useRef(5000);
   const openTradeId = useRef<string | null>(null);
   const botRef = useRef(false);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const lastTradeRef = useRef(0);
   const dailyPnlRef = useRef(0);
   const tradeMap = useRef<Map<string, Trade>>(new Map());
@@ -129,7 +130,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
         const symbol = String(data.echo_req?.contracts_for || data.passthrough?.symbol || '');
         if (!symbol || !marketsRef.current.has(symbol)) return;
         const types = Array.from(getContractTypes(data.contracts || data));
-        const supported = types.includes('MULTUP') && types.includes('MULTDOWN');
+        const supported = types.includes('MULTUP') || types.includes('MULTDOWN');
         updateMarket(symbol, { contracts: types.filter(t => t === 'MULTUP' || t === 'MULTDOWN'), supported, error: supported ? undefined : 'Multipliers not listed for this instrument' });
         const all = Array.from(marketsRef.current.values());
         if (all.every(m => m.supported !== null)) setScanState('VERIFIED');
@@ -149,7 +150,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
         updateMarket(symbol, { ticks, last: Number(data.tick.quote), updatedAt: Date.now() });
         const direction = momentum(ticks);
         if (direction) setLastSignal(symbol + ' · ' + direction + ' · 9/10 directional moves');
-        if (botRef.current && direction && selected === symbol) requestDemoProposal(symbol, direction);
+        if (botRef.current && direction && selectedRef.current === symbol) requestDemoProposal(symbol, direction);
       }
     };
   }
@@ -170,7 +171,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
       socket.onmessage = event => {
         let data: any;
         try { data = JSON.parse(event.data); } catch { return; }
-        if (data.error) { setPendingMessage(data.error.message || 'Demo trading request rejected.'); return; }
+        if (data.error) { if (Number.isInteger(Number(data.req_id))) proposalRequests.current.delete(Number(data.req_id)); setPendingMessage(data.error.message || 'Demo trading request rejected.'); return; }
         if (data.msg_type === 'proposal') {
           const req = proposalRequests.current.get(Number(data.req_id));
           if (!req) return;
@@ -218,7 +219,6 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
               localStorage.setItem(DAILY_KEY, JSON.stringify({day:new Date().toISOString().slice(0,10),pnl:nextPnl}));
             }
             setPendingMessage('Demo contract settled · result recorded locally.');
-            setLastTradeAt(Date.now());
           }
         }
       };
@@ -228,7 +228,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
   function requestDemoProposal(symbol: string, direction: 'MULTUP'|'MULTDOWN') {
     const socket = demoSocket.current;
     const market = marketsRef.current.get(symbol);
-    if (!botRef.current || !socket || socket.readyState !== WebSocket.OPEN || !market?.supported) return;
+    if (!botRef.current || !socket || socket.readyState !== WebSocket.OPEN || !market?.supported || !market.contracts.includes(direction)) return;
     if (openTradeId.current || dailyPnlRef.current <= -DAILY_STOP || Date.now() - lastTradeRef.current < COOLDOWN_MS) return;
     if (proposalRequests.current.size) return;
     lastTradeRef.current = Date.now();
@@ -266,7 +266,7 @@ export default function CrashBoomScalper({ demoConnected, demoAccountId, demoCur
         {markets.map(m=><tr key={m.symbol}><td><button className="text-button" onClick={()=>setSelected(m.symbol)}>{m.name}</button><small className="scalper-symbol">{m.symbol}</small></td><td>{m.supported === null ? 'Checking…' : m.contracts.includes('MULTUP') ? 'Supported' : 'Unavailable'}</td><td>{m.supported === null ? 'Checking…' : m.contracts.includes('MULTDOWN') ? 'Supported' : 'Unavailable'}</td><td>{m.ticks.length}</td><td>{m.last ?? '—'}</td></tr>)}
         {!markets.length && <tr><td colSpan={5} className="empty">Run the instrument scan to discover the Crash/Boom symbols and supported contract types.</td></tr>}
       </tbody></table></div>
-      <p className="muted">A symbol is eligible only when Deriv's returned contract metadata explicitly includes both MULTUP and MULTDOWN. If only one direction is listed, the current two-way filter keeps it out until the scanner is refined.</p>
+      <p className="muted">A symbol is eligible when Deriv explicitly lists at least one Multiplier direction. The bot checks the exact direction before requesting a quote; unsupported directions are blocked.</p>
     </div>
     <div className="scalper-columns">
       <div className="panel">
