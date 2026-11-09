@@ -62,7 +62,7 @@ async function queueResearchDecision(decision: Record<string, unknown>) {
   const queue = readResearchQueue().filter(item => item.decision_uid !== id);
   queue.push(decision);
   try { localStorage.setItem(RESEARCH_QUEUE_KEY, JSON.stringify(queue.slice(-2000))); } catch {}
-  await flushResearchQueue();
+  // The periodic authenticated sync batches decisions to reduce request volume.
 }
 async function flushResearchQueue() {
   if (!navigator.onLine) return;
@@ -322,7 +322,7 @@ function App() {
                     const isCorrect = pendingResearch.strategy === 'DIFFERS' ? tick.lastDigit !== pendingResearch.target_digit : tick.lastDigit === pendingResearch.target_digit;
                     const settled: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy: pendingResearch.strategy, targetDigit: pendingResearch.target_digit, predictedEpoch: pendingResearch.predicted_at_epoch, settledEpoch: epoch, outcomeDigit: tick.lastDigit, correct: isCorrect, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
                     setResearchDecisions(previous => [...previous.filter(item => item.id !== settled.id), settled].slice(-2000));
-                    queueResearchDecision({ ...pendingResearch, settled_at_epoch: epoch, outcome_digit: tick.lastDigit, is_correct: isCorrect }).then(() => setBackendStatus('Research journal synced')).catch(() => setBackendStatus('Research journal queued for sync'));
+                    queueResearchDecision({ ...pendingResearch, settled_at_epoch: epoch, outcome_digit: tick.lastDigit, is_correct: isCorrect }).then(() => setBackendStatus('Research settlement queued for sync')).catch(() => setBackendStatus('Research journal queued for sync'));
                     pendingResearchRef.current.delete(researchKey);
                   }
                   const pending = pendingChoicesRef.current.get(marketSymbol);
@@ -378,7 +378,7 @@ function App() {
                       pendingResearchRef.current.set(marketSymbol + ':' + strategy, pendingResearch);
                       const openDecision: ResearchDecision = { id: pendingResearch.decision_uid, symbol: marketSymbol, strategy, targetDigit, predictedEpoch: epoch, settledEpoch: null, outcomeDigit: null, correct: null, analysisWindow: pendingResearch.analysis_window, sampleSize: pendingResearch.sample_size, empiricalRate: pendingResearch.empirical_rate, modelVersion: pendingResearch.model_version };
                       setResearchDecisions(previous => [...previous.filter(item => item.id !== openDecision.id), openDecision].slice(-2000));
-                      queueResearchDecision({ ...pendingResearch, settled_at_epoch: null, outcome_digit: null, is_correct: null }).then(() => setBackendStatus('Research decision synced')).catch(() => setBackendStatus('Research decision queued for sync'));
+                      queueResearchDecision({ ...pendingResearch, settled_at_epoch: null, outcome_digit: null, is_correct: null }).then(() => setBackendStatus('Research decision queued for sync')).catch(() => setBackendStatus('Research decision queue unavailable'));
                     }
                   }
                   if (priorDigits.length >= windowSizeRef.current) {
