@@ -254,6 +254,71 @@ async function handle(request) {
     return json({ ok: true, accepted: choices.length });
   }
 
+  if (method === "GET" && path === "/research") {
+    const sql = getSql();
+    const rows = await sql`SELECT decision_uid, symbol, strategy, target_digit, predicted_at_epoch,
+      settled_at_epoch, outcome_digit, is_correct, analysis_window, sample_size, empirical_rate, model_version
+      FROM public.ddpe_research_decisions
+      WHERE owner_id = ${OWNER_ID}
+      ORDER BY predicted_at_epoch DESC LIMIT 1000`;
+    const summary = await sql`SELECT strategy, COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE settled_at_epoch IS NOT NULL)::int AS settled,
+      COUNT(*) FILTER (WHERE is_correct = TRUE)::int AS wins,
+      COUNT(*) FILTER (WHERE is_correct = FALSE)::int AS losses
+      FROM public.ddpe_research_decisions WHERE owner_id = ${OWNER_ID} GROUP BY strategy`;
+    return json({ decisions: rows.map((row) => ({
+      id: row.decision_uid, symbol: row.symbol, strategy: row.strategy,
+      targetDigit: Number(row.target_digit), predictedEpoch: Number(row.predicted_at_epoch),
+      settledEpoch: row.settled_at_epoch == null ? null : Number(row.settled_at_epoch),
+      outcomeDigit: row.outcome_digit == null ? null : Number(row.outcome_digit),
+      correct: row.is_correct == null ? null : Boolean(row.is_correct),
+      analysisWindow: Number(row.analysis_window), sampleSize: Number(row.sample_size),
+      empiricalRate: Number(row.empirical_rate), modelVersion: row.model_version
+    })), summary: summary.map((row) => ({ strategy: row.strategy, total: Number(row.total),
+      settled: Number(row.settled), wins: Number(row.wins), losses: Number(row.losses) })) });
+  }
+
+  if (method === "POST" && path === "/research") {
+    assertSameOrigin(request);
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
+    const decisions = Array.isArray(body?.decisions) ? body.decisions : [body];
+    if (!decisions.length || decisions.length > 100 || decisions.some((item) =>
+      typeof item?.decision_uid !== "string" || item.decision_uid.length < 8 || item.decision_uid.length > 160 ||
+      typeof item?.symbol !== "string" || !/^[A-Za-z0-9_]{1,32}$/.test(item.symbol) ||
+      !["DIFFERS", "MATCHES"].includes(item.strategy) ||
+      !Number.isInteger(item.target_digit) || item.target_digit < 0 || item.target_digit > 9 ||
+      !Number.isSafeInteger(item.predicted_at_epoch) ||
+      (item.settled_at_epoch != null && (!Number.isSafeInteger(item.settled_at_epoch) || item.settled_at_epoch <= item.predicted_at_epoch)) ||
+      (item.outcome_digit != null && (!Number.isInteger(item.outcome_digit) || item.outcome_digit < 0 || item.outcome_digit > 9)) ||
+      (item.is_correct != null && typeof item.is_correct !== "boolean") ||
+      !Number.isInteger(item.analysis_window) || item.analysis_window < 50 || item.analysis_window > 5000 ||
+      !Number.isInteger(item.sample_size) || item.sample_size < 0 ||
+      !Number.isFinite(item.empirical_rate) || item.empirical_rate < 0 || item.empirical_rate > 1 ||
+      typeof item.model_version !== "string" || item.model_version.length > 80 ||
+      ((item.settled_at_epoch == null) !== (item.outcome_digit == null)) ||
+      ((item.settled_at_epoch == null) !== (item.is_correct == null)))) {
+      return json({ error: "Invalid research decision batch." }, 400);
+    }
+    const sql = getSql();
+    await sql`INSERT INTO public.ddpe_research_decisions
+      (owner_id, decision_uid, symbol, strategy, target_digit, predicted_at_epoch,
+       settled_at_epoch, outcome_digit, is_correct, analysis_window, sample_size, empirical_rate, model_version)
+      SELECT ${OWNER_ID}, item.decision_uid, item.symbol, item.strategy, item.target_digit,
+        item.predicted_at_epoch, item.settled_at_epoch, item.outcome_digit, item.is_correct,
+        item.analysis_window, item.sample_size, item.empirical_rate, item.model_version
+      FROM jsonb_to_recordset(${JSON.stringify(decisions)}::jsonb)
+      AS item(decision_uid text, symbol text, strategy text, target_digit smallint,
+        predicted_at_epoch bigint, settled_at_epoch bigint, outcome_digit smallint,
+        is_correct boolean, analysis_window integer, sample_size integer,
+        empirical_rate numeric, model_version text)
+      ON CONFLICT (owner_id, decision_uid) DO UPDATE SET
+        settled_at_epoch = EXCLUDED.settled_at_epoch,
+        outcome_digit = EXCLUDED.outcome_digit,
+        is_correct = EXCLUDED.is_correct`;
+    return json({ ok: true, accepted: decisions.length });
+  }
+
   return json({ error: "Not found." }, 404);
 }
 
