@@ -1,6 +1,6 @@
 # DDPE Vercel + Neon setup
 
-This repository is Vercel-only. There is no Netlify adapter, Netlify function, or Netlify configuration.
+This repository is configured exclusively for Vercel.
 
 ## 1. Vercel project configuration
 
