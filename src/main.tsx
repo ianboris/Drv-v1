@@ -2,7 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
 
-const WS = 'wss://ws.derivws.com/websockets/v3?app_id=1089';
+const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim();
+const WS = DERIV_APP_ID
+  ? `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`
+  : '';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
 type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
 type Settings = { stake: number; dailyLossLimit: number; windowSize: number; currency: string };
@@ -94,6 +97,11 @@ function App() {
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
+    if (!DERIV_APP_ID) {
+      setStatus('CONFIGURATION REQUIRED');
+      setError('Deriv connection is disabled. Set VITE_DERIV_APP_ID in Vercel and redeploy.');
+      return;
+    }
     ticksBySymbolRef.current.clear();
     pipSizesBySymbolRef.current.clear();
     pendingChoicesRef.current.clear();
@@ -103,13 +111,17 @@ function App() {
     let alive = true;
     let socket: WebSocket | null = null;
     const subscriptionTimers: number[] = [];
+    let reconnectAttempt = 0;
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
+      console.info('[DERIV] Opening WebSocket connection', { endpoint: 'wss://ws.derivws.com/websockets/v3', appIdConfigured: Boolean(DERIV_APP_ID) });
       socket = new WebSocket(WS);
       ws.current = socket;
       socket.onopen = () => {
         if (!alive || !socket) return;
+        reconnectAttempt = 0;
+        console.info('[DERIV] WebSocket connected', { readyState: socket.readyState });
         setStatus('CONNECTED');
         setError('');
         // Ask Deriv only for underlyings that list DIGITDIFF as an available contract.
@@ -309,13 +321,25 @@ function App() {
           }
         } catch { setError('Could not read the Deriv market-data response.'); }
       };
-      socket.onerror = () => { if (alive) setError('Deriv WebSocket connection error.'); };
-      socket.onclose = () => {
+      socket.onerror = (event) => {
+        console.error('[DERIV] WebSocket error event', event);
+        if (alive) setError('Deriv WebSocket connection error. Check the browser console and Network → WS for handshake details.');
+      };
+      socket.onclose = (event) => {
+        console.error('[DERIV] WebSocket closed', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          readyState: socket?.readyState,
+        });
         if (!alive) return;
         subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
         subscriptionTimers.length = 0;
         setStatus('RECONNECTING');
-        reconnectTimer.current = window.setTimeout(connect, 2500);
+        const delay = Math.min(30000, 1500 * (2 ** Math.min(reconnectAttempt, 5)));
+        reconnectAttempt += 1;
+        setError(`Deriv WebSocket closed (code ${event.code}${event.reason ? `: ${event.reason}` : ''}). Retrying in ${Math.round(delay / 1000)}s.`);
+        reconnectTimer.current = window.setTimeout(connect, delay);
       };
     };
     connect();
