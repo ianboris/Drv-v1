@@ -852,6 +852,7 @@ function App() {
   }
 
   const selectSymbol = (nextSymbol: string) => {
+    if (demoAutoTradingRef.current || openDemoContractRef.current) return;
     if (nextSymbol === selectedSymbolRef.current) return;
     selectedSymbolRef.current = nextSymbol;
     setSymbol(nextSymbol);
@@ -964,10 +965,10 @@ function App() {
         <div className="section-heading">LOTUS DIGIT INTELLIGENCE</div><h2>Choose a research engine</h2>
         <p className="muted">Both engines score the next observed tick. These are frequency baselines, not proven predictive edges.</p>
         <div className="strategy-switch">
-          <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
-          <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
-          <button className={activeStrategy === 'EVEN' ? 'selected' : ''} onClick={() => { setActiveStrategy('EVEN'); setAnalysisRunning(false); }}>EVEN<small>Next digit is even</small></button>
-          <button className={activeStrategy === 'ODD' ? 'selected' : ''} onClick={() => { setActiveStrategy('ODD'); setAnalysisRunning(false); }}>ODD<small>Next digit is odd</small></button>
+          <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
+          <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
+          <button className={activeStrategy === 'EVEN' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('EVEN'); setAnalysisRunning(false); }}>EVEN<small>Next digit is even</small></button>
+          <button className={activeStrategy === 'ODD' ? 'selected' : ''} disabled={demoAutoTrading} onClick={() => { setActiveStrategy('ODD'); setAnalysisRunning(false); }}>ODD<small>Next digit is odd</small></button>
         </div>
         <div className="research-signal">
           <span className="section-heading">{activeStrategy} · {marketName}</span>
@@ -1001,7 +1002,7 @@ function App() {
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
         <div className="table-wrap"><table><thead><tr><th>Opened</th><th>Market</th><th>Engine</th><th>Target</th><th>Stake</th><th>Status</th><th>Demo P/L</th></tr></thead><tbody>
           {[...demoTrades.filter(trade => trade.accountId === selectedDemoAccountId)].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
-          {!demoTrades.length && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a demo execution session, choose Differs or Matches, then start the demo bot.</td></tr>}
+          {!demoTrades.some(trade => trade.accountId === selectedDemoAccountId) && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a demo execution session, choose Differs or Matches, then start the demo bot.</td></tr>}
         </tbody></table></div>
         <small className="muted">Controls: one open contract at a time, 5-second cooldown and a browser-enforced daily loss stop. The bot runs only while this dashboard remains open. These controls are demo safeguards, not server-enforced live risk controls. Even/Odd remains research-only.</small>
       </section>
@@ -1061,7 +1062,7 @@ function App() {
         </tbody></table></div>
       </section>
       <section className="panel">
-        <div className="panel-title journal-toolbar"><div><div className="section-heading">FOUR-ENGINE RESEARCH JOURNAL · {marketName}</div><p className="muted">Only this selected market is shown. Decisions from other symbols are kept separate.</p></div><label className="journal-market-filter">Market<select value={symbol} onChange={(event) => selectSymbol(event.target.value)}>{symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}</select></label></div>
+        <div className="panel-title journal-toolbar"><div><div className="section-heading">FOUR-ENGINE RESEARCH JOURNAL · {marketName}</div><p className="muted">Only this selected market is shown. Decisions from other symbols are kept separate.</p></div><label className="journal-market-filter">Market<select value={symbol} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onChange={(event) => selectSymbol(event.target.value)}>{symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}</select></label></div>
         <p className="muted">Each decision is saved before its next-tick result is known, then updated when the next tick arrives. Unresolved decisions remain pending if the feed disconnects.</p>
         <div className="table-wrap"><table><thead><tr><th>Predicted (UTC)</th><th>Market</th><th>Engine</th><th>Target</th><th>Next digit</th><th>Empirical rate</th><th>Result</th></tr></thead><tbody>
           {marketResearchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.strategy === 'EVEN' ? 'Even' : item.strategy === 'ODD' ? 'Odd' : item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
