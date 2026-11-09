@@ -97,6 +97,36 @@ test("tick API rejects rows without stable tick identity before database access"
   }
 });
 
+test("choice API rejects settlement at the prediction second before database access", async () => {
+  const secret = "s".repeat(40);
+  const old = process.env.DDPE_SESSION_SECRET;
+  process.env.DDPE_SESSION_SECRET = secret;
+  try {
+    const response = await api(new Request("https://example.test/api/choices", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://example.test",
+        cookie: "ddpe_session=" + signedSession(secret),
+      },
+      body: JSON.stringify({ choices: [{
+        choice_uid: "choice-same-second-123",
+        symbol: "1HZ100V",
+        barrier_digit: 3,
+        predicted_at_epoch: 100,
+        settled_at_epoch: 100,
+        outcome_digit: 4,
+        is_correct: true,
+        analysis_window: 100,
+      }] }),
+    }));
+    assert.equal(response.status, 400);
+  } finally {
+    if (old === undefined) delete process.env.DDPE_SESSION_SECRET;
+    else process.env.DDPE_SESSION_SECRET = old;
+  }
+});
+
 test("choice API rejects same-second-invalid fields before database access", async () => {
   const secret = "s".repeat(40);
   const old = process.env.DDPE_SESSION_SECRET;
