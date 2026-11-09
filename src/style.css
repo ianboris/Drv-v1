@@ -164,3 +164,15 @@ main:not(.login-shell) .tabs button:hover { background: #211b2b; color: #f4eaff;
   .journal-market-filter { min-width: 0; width: 100%; }
   .journal-market-filter select { width: 100%; }
 }
+
+/* Overview command centre */
+.overview-intro{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;margin:18px 2px 14px}
+.overview-intro h2{font-family:"Iowan Old Style","Bodoni 72",Georgia,serif;font-weight:500;font-size:clamp(25px,4vw,34px);margin:8px 0 3px;color:#f4eaff}
+.overview-money-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.money-card{display:grid;gap:9px;margin:0;min-height:138px;align-content:start}
+.money-card span{font:700 10px ui-monospace,monospace;letter-spacing:.1em;color:#b9a4d8}
+.money-card strong{font-size:clamp(22px,3vw,30px);font-variant-numeric:tabular-nums;color:#f4eaff}
+.money-card small{font-size:10px;line-height:1.5;color:#a99bb5}
+.overview-intro .execution-lock{font-size:9px}
+@media(max-width:850px){.overview-money-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.overview-intro{align-items:flex-start;flex-direction:column}.overview-money-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.money-card{min-height:132px;padding:12px}.money-card strong{font-size:21px}}
