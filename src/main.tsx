@@ -589,7 +589,7 @@ function App() {
     setSettings((current) => ({ ...current, [key]: value } as Settings));
     setSaved(false);
   };
-  const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
+  const validSettings = settings.stake > 0 && settings.stake <= 1000 && settings.dailyLossLimit > 0 && settings.dailyLossLimit <= 10000 && settings.takeProfitLimit > 0 && settings.takeProfitLimit <= 10000 && Number.isInteger(settings.windowSize) && settings.windowSize >= 50 && settings.windowSize <= 5000;
 
   function requestMarketProposal(marketSymbol: string, marketTicks?: Tick[]) {
     const currentSettings = settingsRef.current;
@@ -644,7 +644,7 @@ function App() {
       const savedResponse = await fetch('/api/settings', { credentials: 'same-origin', cache: 'no-store' });
       if (!savedResponse.ok) throw new Error('Login succeeded, but settings could not be loaded from Neon.');
       const remote = await savedResponse.json();
-      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
+      setSettings({ stake: Number(remote.stake), dailyLossLimit: Number(remote.dailyLossLimit), takeProfitLimit: Number(remote.takeProfitLimit), windowSize: Number(remote.windowSize), currency: String(remote.currency || '') });
       setSettingsLoaded(true);
       setAuthenticated(true);
       setLoginPassword('');
@@ -665,7 +665,7 @@ function App() {
   return <main className={theme === 'light' ? 'theme-light' : 'theme-dark'}>
     <header className="topbar">
       <div><div className="eyebrow">LOTUS · DERIV RESEARCH</div><h1>Lotus</h1><p className="subhead">Deriv digit intelligence · research first</p></div>
-      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />{status}</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
+      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />MARKET {status}</span><span className="status account-status">ACCOUNT NOT LINKED</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
@@ -685,7 +685,7 @@ function App() {
             {symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}
           </select>
         </label>
-        <div className="quote"><span>{marketName}</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong><small>{ticks.length.toLocaleString()} ticks in this market · {symbols.length} Differs-capable markets monitored</small></div>
+        <div className="quote"><span>{marketName}</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong><small>{ticks.length.toLocaleString()} ticks in this market · {symbols.length} digit-contract markets monitored</small></div>
       </section>
 
       <section className="overview-grid">
@@ -747,28 +747,28 @@ function App() {
           <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
         </div>
         <div className="research-signal">
-          <span className="section-heading">{activeStrategy} · ${marketName}</span>
-          <div className="signal-digit">${activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—')}</div>
+          <span className="section-heading">{activeStrategy} · {marketName}</span>
+          <div className="signal-digit">{activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—')}</div>
           <div className="signal-label">TARGET DIGIT</div>
-          <div className="candidate-row"><span>Observed baseline success rate</span><strong>${stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100).toFixed(2) + '%' : '—'}</strong></div>
-          <div className="candidate-row"><span>Historical sample</span><strong>${stats.sample} / ${settings.windowSize}</strong></div>
+          <div className="candidate-row"><span>Observed baseline success rate</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : Math.max(...stats.probabilities)) * 100).toFixed(2) + '%' : '—'}</strong></div>
+          <div className="candidate-row"><span>Historical sample</span><strong>{stats.sample} / {settings.windowSize}</strong></div>
           <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
           <p className="muted">Differs selects the least frequent digit; Matches selects the most frequent. These choices are descriptive baselines, can overfit noise, and do not mean any digit is due.</p>
         </div>
         <div className="control-row research-controls">
-          <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START ${activeStrategy} ANALYSIS</button>
+          <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START {activeStrategy} ANALYSIS</button>
           <button className="stop-button" onClick={() => setAnalysisRunning(false)} disabled={!analysisRunning}>STOP ANALYSIS</button>
         </div>
-        <small className="lock-note">${analysisRunning ? activeStrategy + ' paper research running · no Deriv orders sent' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
+        <small className="lock-note">{analysisRunning ? activeStrategy + ' paper research running · no Deriv orders sent' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
       </section>
       <section className="panel"><div className="section-heading">LIVE TRADING MASTER SWITCH</div><div className="master-row"><div><strong>Live execution</strong><p className="muted">Locked pending account authorization, verified settlement reconciliation and server-enforced risk controls.</p></div><button className="master-switch" disabled aria-pressed={liveMaster}>OFF · LOCKED</button></div></section>
-      <section className="panel"><div className="section-heading">CROSS-MARKET RESEARCH</div><p className="muted">Public market ticks are collected while this dashboard is open. Closing the browser stops the live collector in this version.</p><div className="candidate-row"><span>Markets subscribed</span><strong>${symbols.length}</strong></div><div className="candidate-row"><span>Live tick stream</span><strong>${status}</strong></div><div className="candidate-row"><span>Persisted research decisions</span><strong>${researchDecisions.length}</strong></div></section>
+      <section className="panel"><div className="section-heading">CROSS-MARKET RESEARCH</div><p className="muted">Public market ticks are collected while this dashboard is open. Closing the browser stops the live collector in this version.</p><div className="candidate-row"><span>Markets subscribed</span><strong>{symbols.length}</strong></div><div className="candidate-row"><span>Live tick stream</span><strong>{status}</strong></div><div className="candidate-row"><span>Persisted research decisions</span><strong>{researchDecisions.length}</strong></div></section>
     </>}
 
     {tab === 'wins' && <>
-      <section className="stats-grid wins-grid">${(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>${strategy} PAPER WIN RATE</span><strong>${rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>${wins} wins · ${rows.length - wins} losses · ${rows.length} settled</small></div>; })}</section>
+      <section className="stats-grid wins-grid">{(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>{strategy} PAPER WIN RATE</span><strong>{rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>{wins} wins · {rows.length - wins} losses · {rows.length} settled</small></div>; })}</section>
       <section className="overview-grid"><div className="panel metric-card"><span>VERIFIED LIVE P/L</span><strong>—</strong><small>Unavailable: live trading is disabled.</small></div><div className="panel metric-card"><span>LIVE ACCOUNT WIN RATE</span><strong>—</strong><small>No live contracts have been executed or settled.</small></div></section>
-      <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>${(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>${strategy}</td><td>${rows.length}</td><td>${wins}</td><td>${rows.length-wins}</td><td>${rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
+      <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>{(['DIFFERS','MATCHES'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>{strategy}</td><td>{rows.length}</td><td>{wins}</td><td>{rows.length-wins}</td><td>{rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
     </>}
 
     {tab === 'activity' && <>
@@ -819,6 +819,10 @@ function App() {
           <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.dailyLossLimit} onChange={(event) => changeSetting('dailyLossLimit', Number(event.target.value))} /></div>
           <small>Hard stop: the execution service must block new purchases once the realised daily net loss reaches this amount.</small>
         </label>
+        <label className="setting-field">Take profit target (account currency)
+          <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.takeProfitLimit} onChange={(event) => changeSetting('takeProfitLimit', Number(event.target.value))} /></div>
+          <small>Stored risk preference only. It is not an active trading stop while execution is locked.</small>
+        </label>
         <label className="setting-field">Deriv account currency
           <input type="text" maxLength={20} autoCapitalize="characters" placeholder="e.g. USD, EUR, USDT" value={settings.currency} onChange={(event) => changeSetting('currency', event.target.value.trim().toUpperCase())} />
           <small>Enter the exact currency displayed in your Deriv account. Do not guess. This is required for comparable proposal prices.</small>
@@ -829,6 +833,13 @@ function App() {
         </label>
         {!validSettings && <div className="validation-error">Use stake 0–1,000, daily loss 0–10,000, and an integer window of 50–5,000 ticks.</div>}
         <div className="settings-actions"><button className="secondary-button" onClick={() => setSettings(DEFAULT_SETTINGS)}>Restore defaults</button><span className="default-note">Defaults: 1.00 stake · 2.00 daily loss</span></div>
+      </section>
+      <section className="panel safety-panel">
+        <div className="section-heading">DERIV ACCOUNT CONNECTION</div>
+        <div className="candidate-row"><span>Public market data</span><strong>{status}</strong></div>
+        <div className="candidate-row"><span>Trading account</span><strong>Not connected</strong></div>
+        <p className="muted">Account authorization is not yet enabled. Do not paste an API token into this page. The account connection will use a secure authorization flow with explicitly scoped permissions, server-side safeguards and verified account identity.</p>
+        <button className="secondary-button" disabled title="Secure Deriv authorization flow is not implemented yet">CONNECT DERIV ACCOUNT · LOCKED</button>
       </section>
       <section className="panel safety-panel">
         <div className="section-heading">EXECUTION SAFETY</div>
