@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
 import { calculateContractEconomics } from './riskCalculator';
+import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -105,6 +106,8 @@ function App() {
   const [selectedDemoAccountId, setSelectedDemoAccountId] = useState('');
   const [derivDemoMessage, setDerivDemoMessage] = useState('Not connected');
   const [derivDemoBusy, setDerivDemoBusy] = useState(false);
+  const [backtestResult, setBacktestResult] = useState<WalkForwardBacktestResult | null>(null);
+  const [backtestStrategy, setBacktestStrategy] = useState<ResearchStrategy>('DIFFERS');
   const [authChecking, setAuthChecking] = useState(true);
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -858,6 +861,32 @@ function App() {
     {tab === 'wins' && <>
       <section className="stats-grid wins-grid">{(['DIFFERS','MATCHES','EVEN','ODD'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <div className="panel metric-card" key={strategy}><span>{strategy} PAPER WIN RATE</span><strong>{rows.length ? (wins / rows.length * 100).toFixed(2) + '%' : '—'}</strong><small>{wins} wins · {rows.length - wins} losses · {rows.length} settled</small></div>; })}</section>
       <section className="overview-grid"><div className="panel metric-card"><span>VERIFIED LIVE P/L</span><strong>—</strong><small>Unavailable: live trading is disabled.</small></div><div className="panel metric-card"><span>LIVE ACCOUNT WIN RATE</span><strong>—</strong><small>No live contracts have been executed or settled.</small></div></section>
+      <section className="panel">
+        <div className="section-heading">HISTORICAL WALK-FORWARD BACKTEST</div>
+        <p className="muted">Replays the selected market chronologically. Each decision sees only the preceding rolling window. The first 70% warms the process; the final 30% is the untouched chronological test segment.</p>
+        <div className="settings-actions">
+          <label className="setting-field">Strategy
+            <select value={backtestStrategy} onChange={event => setBacktestStrategy(event.target.value as ResearchStrategy)}>
+              <option value="DIFFERS">Differs</option><option value="MATCHES">Matches</option><option value="EVEN">Even</option><option value="ODD">Odd</option>
+            </select>
+          </label>
+          <button className="secondary-button" onClick={() => {
+            const marketTicks = ticksBySymbolRef.current.get(symbol) || [];
+            const digits = marketTicks.map(tick => Number.isInteger(tick.lastDigit) ? Number(tick.lastDigit) : digitFromQuote(tick.quote, tick.pipSize));
+            try { setBacktestResult(runWalkForwardBacktest(digits, backtestStrategy, settings.windowSize)); }
+            catch (error) { setError(error instanceof Error ? error.message : 'Backtest failed.'); }
+          }}>RUN HISTORICAL BACKTEST</button>
+        </div>
+        {backtestResult && <>
+          <div className="stats-grid wins-grid">
+            <div className="panel metric-card"><span>TEST TRADES</span><strong>{backtestResult.testTrades}</strong><small>{backtestResult.warmupTicks} warm-up ticks · {backtestResult.totalTicks} total</small></div>
+            <div className="panel metric-card"><span>TEST HIT RATE</span><strong>{backtestResult.winRate === null ? '—' : (backtestResult.winRate * 100).toFixed(2) + '%'}</strong><small>{backtestResult.wins} wins · {backtestResult.losses} losses</small></div>
+            <div className="panel metric-card"><span>THEORETICAL BASELINE</span><strong>{(backtestResult.theoreticalBaseline * 100).toFixed(1)}%</strong><small>Difference: {backtestResult.differenceFromBaseline === null ? '—' : (backtestResult.differenceFromBaseline * 100).toFixed(2) + ' pp'}</small></div>
+            <div className="panel metric-card"><span>MAX LOSS STREAK</span><strong>{backtestResult.maxConsecutiveLosses}</strong><small>{backtestResult.strategy} · {backtestResult.windowSize}-tick window</small></div>
+          </div>
+          <p className="muted">{backtestResult.note}</p>
+        </>}
+      </section>
       <section className="panel"><div className="section-heading">PAPER PERFORMANCE BY ENGINE</div><div className="table-wrap"><table><thead><tr><th>Engine</th><th>Settled</th><th>Wins</th><th>Losses</th><th>Win rate</th></tr></thead><tbody>{(['DIFFERS','MATCHES','EVEN','ODD'] as ResearchStrategy[]).map(strategy => { const rows = researchDecisions.filter(item => item.strategy === strategy && item.correct !== null); const wins = rows.filter(item => item.correct).length; return <tr key={strategy}><td>{strategy}</td><td>{rows.length}</td><td>{wins}</td><td>{rows.length-wins}</td><td>{rows.length ? (wins/rows.length*100).toFixed(2)+'%' : '—'}</td></tr>; })}</tbody></table></div><p className="muted">Paper win rate is not net profitability. Contract payout, stake, fees and realized settlement are not included.</p></section>
     </>}
 
