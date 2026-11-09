@@ -620,6 +620,26 @@ function App() {
   const symbolOutcomes = choiceOutcomes.filter((item) => item.symbol === symbol);
   // The journal is scoped to the currently selected market. Historical records from other symbols remain in storage for research, but are not mixed into this market's journal view.
   const marketResearchDecisions = researchDecisions.filter((item) => item.symbol === symbol);
+  const overviewSettled = researchDecisions.filter(item => item.correct !== null);
+  const overviewWins = overviewSettled.filter(item => item.correct === true).length;
+  const overviewLosses = overviewSettled.length - overviewWins;
+  const overviewWinRate = overviewSettled.length ? overviewWins / overviewSettled.length * 100 : null;
+  const overviewMarketLeaders = Array.from(researchDecisions.reduce((map, item) => {
+    if (item.correct === null) return map;
+    const current = map.get(item.symbol) || { symbol: item.symbol, wins: 0, losses: 0, total: 0 };
+    current.total += 1;
+    if (item.correct) current.wins += 1; else current.losses += 1;
+    map.set(item.symbol, current);
+    return map;
+  }, new Map<string, {symbol:string;wins:number;losses:number;total:number}>()).values())
+    .map(row => ({...row, rate: row.wins / row.total, name: symbols.find(item=>item.underlying_symbol===row.symbol)?.underlying_symbol_name || row.symbol}))
+    .sort((a,b) => b.rate-a.rate || b.total-a.total);
+  const crashBoomRows = symbols.filter(item => /crash|boom/i.test(`${item.underlying_symbol} ${item.underlying_symbol_name || ''}`)).map(item => {
+    const outcomes = researchDecisions.filter(decision => decision.symbol === item.underlying_symbol && decision.correct !== null);
+    const wins = outcomes.filter(decision => decision.correct === true).length;
+    const marketTicks = ticksBySymbolRef.current.get(item.underlying_symbol) || [];
+    return {symbol:item.underlying_symbol,name:item.underlying_symbol_name || item.underlying_symbol,latestQuote:marketTicks.at(-1)?.quote ?? null,tickCount:marketTicks.length,total:outcomes.length,winRate:outcomes.length ? wins/outcomes.length : 0};
+  });
   const settledCorrect = symbolOutcomes.filter((item) => item.correct).length;
   const settledAccuracy = symbolOutcomes.length ? settledCorrect / symbolOutcomes.length * 100 : null;
   const changeSetting = (key: keyof Settings, value: number | string) => {
@@ -772,65 +792,38 @@ function App() {
     {error && <div className="error" role="alert">{error}</div>}
 
     {tab === 'overview' && <>
-      <section className="panel market-panel">
-        <label className="field">Market
-          <select value={symbol} onChange={(event) => selectSymbol(event.target.value)}>
-            {symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}
-          </select>
-        </label>
-        <div className="quote"><span>{marketName}</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong><small>{ticks.length.toLocaleString()} ticks in this market · {symbols.length} digit-contract markets monitored</small></div>
+      <section className="overview-intro">
+        <div><div className="section-heading">TRADING COMMAND CENTRE</div><h2>Performance at a glance</h2><p className="muted">Account results, strongest research markets and Crash/Boom market conditions in one place.</p></div>
+        <span className="execution-lock">RESEARCH ONLY · EXECUTION LOCKED</span>
       </section>
-
+      <section className="overview-money-grid">
+        <div className="panel money-card"><span>REALIZED P/L</span><strong>—</strong><small>No contracts have been executed and settled through Lotus. No profit figure is available.</small></div>
+        <div className="panel money-card"><span>DEMO ACCOUNT BALANCE</span><strong>{derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId)?.balance == null ? '—' : `${derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId)!.balance!.toFixed(2)} ${derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId)!.currency}`}</strong><small>{derivDemoConnected ? 'Balance returned when demo accounts were loaded' : 'Connect a Deriv demo account in Settings'}</small></div>
+        <div className="panel money-card"><span>SETTLED RESEARCH RECORDS</span><strong>{overviewSettled.length.toLocaleString()}</strong><small>{overviewWins} correct · {overviewLosses} incorrect · {overviewWinRate === null ? 'No settled sample yet' : `${overviewWinRate.toFixed(1)}% observed hit rate`}</small></div>
+        <div className="panel money-card"><span>MARKETS WITH RESEARCH</span><strong>{overviewMarketLeaders.length}</strong><small>{symbols.length} digit-contract markets currently available in the feed</small></div>
+      </section>
       <section className="overview-grid">
-        <div className="panel decision-panel">
-          <div className="section-heading">DIFFERS SIGNAL RESEARCH</div>
-          <div className="decision">COLLECTING DATA</div>
-          <p className="muted">No live order is being sent. The current repository has no authenticated execution service or validated signal model.</p>
-          <div className="divider" />
-          <div className="candidate-row"><span>Least frequent digit candidate</span><strong>{stats.barrier >= 0 ? stats.barrier : '—'}</strong></div>
-          <div className="candidate-row"><span>Observed Differs rate vs candidate</span><strong>{stats.sample ? differsEstimate.toFixed(2) + '%' : '—'}</strong></div>
-          <div className="candidate-row"><span>Reference baseline</span><strong>90.00%</strong></div>
-          <div className="candidate-row"><span>Settled paper choices</span><strong>{symbolOutcomes.length}</strong></div>
+        <div className="panel"><div className="panel-title"><div><div className="section-heading">TOP RESEARCH PERFORMERS</div><p className="muted">Ranked by settled paper hit rate, with sample size shown. These are not money-making rankings.</p></div></div>
+          {overviewMarketLeaders.length ? <div className="table-wrap"><table><thead><tr><th>Market</th><th>Hit rate</th><th>Wins / losses</th><th>Samples</th></tr></thead><tbody>{overviewMarketLeaders.slice(0,5).map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td>{(row.rate*100).toFixed(1)}%</td><td>{row.wins} / {row.losses}</td><td>{row.total}</td></tr>)}</tbody></table></div> : <p className="empty-state">No settled research records yet. Start a research session and let the outcomes accumulate.</p>}
         </div>
-        <div className="panel risk-panel">
-          <div className="section-heading">RISK SETTINGS</div>
-          <div className="risk-value"><span>Stake per trade</span><strong>{settings.stake.toFixed(2)} units</strong></div>
-          <div className="risk-value"><span>Daily loss limit</span><strong>{settings.dailyLossLimit.toFixed(2)} units</strong></div><div className="risk-value"><span>Take profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} units</strong></div>
-          <div className="risk-value"><span>Loss limit usage</span><strong>Not connected</strong></div>
-          <button className="secondary-button" onClick={() => setTab('settings')}>Adjust settings</button>
+        <div className="panel"><div className="section-heading">SESSION SNAPSHOT</div>
+          <div className="candidate-row"><span>Selected market</span><strong>{marketName}</strong></div><div className="candidate-row"><span>Latest quote</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong></div><div className="candidate-row"><span>Ticks cached</span><strong>{digits.length.toLocaleString()}</strong></div><div className="candidate-row"><span>Feed status</span><strong>{status}</strong></div><div className="candidate-row"><span>Demo authorization</span><strong>{derivDemoConnected ? 'Connected' : 'Not connected'}</strong></div>
+          <button className="secondary-button" onClick={()=>setTab('settings')}>Account and risk settings</button>
         </div>
       </section>
-
-      <section className="panel market-scanner">
-        <div className="panel-title"><div><div className="section-heading">CROSS-MARKET RESEARCH SCANNER</div><p className="muted">All eligible markets · live one-tick DIGITDIFF quotes · settled paper outcomes.</p></div><span className="live-dot">{settings.currency ? 'SCANNING' : 'SET CURRENCY'}</span></div>
-        {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed win rate (100+ outcomes)</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% observed win rate from {highestWinRateMarket.total} settled paper outcomes</small></div>}
-        {bestMarket ? <div className="scanner-leader"><span>Best profitability-qualified candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed win rate · barrier {bestMarket.quote!.barrier} · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} conservative EV per contract</small></div> : <p className="muted">No market has met every profitability gate yet: at least 100 settled paper outcomes for the exact quoted barrier, a fresh proposal quote in your account currency, and positive conservative expected value. The scanner will not call an under-sampled market profitable.</p>}
-        <div className="table-wrap"><table><thead><tr><th>Market</th><th>Barrier</th><th>Settled / matched</th><th>Strategy win rate</th><th>Quoted-barrier win rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Conservative EV</th><th>Gate</th></tr></thead><tbody>
-          {scannerRows.map((row) => <tr key={row.symbol}><td><button className="text-button" onClick={() => selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.quote ? row.quote.barrier : '—'}</td><td>{row.total} / {row.matchedSample}</td><td>{row.winRate === null ? '—' : (row.winRate * 100).toFixed(2) + '%'}</td><td>{row.matchedWinRate === null ? '—' : (row.matchedWinRate * 100).toFixed(2) + '%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate * 100).toFixed(2) + '%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv >= 0 ? '+' : ''}${row.conservativeEv.toFixed(4)} ${settings.currency}`}</td><td>{!row.quote ? 'Need live quote' : row.matchedSample < 100 ? 'Need 100 barrier matches' : row.conservativeEv! > 0 ? 'Positive estimate' : 'Not profitable'}</td></tr>)}
-          {!scannerRows.length && <tr><td colSpan={9} className="empty">Waiting for eligible Differs markets…</td></tr>}
-        </tbody></table></div>
-        <small className="muted">Conservative EV = Wilson 95% lower-bound win probability for the currently quoted barrier × gross payout − ask price. Strategy-wide win rate is shown separately. Outcomes are paper predictions, not actual contract settlements; serial dependence and market-selection bias are not corrected. Positive estimates are not proof of future profitability.</small>
+      <section className="panel market-scanner"><div className="panel-title"><div><div className="section-heading">CRASH / BOOM WATCHLIST</div><p className="muted">Live tick conditions and settled paper research for Crash/Boom symbols returned by the current digit-contract market feed.</p></div><span className="live-dot">{crashBoomRows.length ? 'MARKETS FOUND' : 'WAITING FOR FEED'}</span></div>
+        {crashBoomRows.length ? <div className="table-wrap"><table><thead><tr><th>Index</th><th>Latest quote</th><th>Ticks cached</th><th>Paper hit rate</th><th>Settled</th><th>Feed</th></tr></thead><tbody>{crashBoomRows.map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.latestQuote ?? '—'}</td><td>{row.tickCount.toLocaleString()}</td><td>{row.total ? `${(row.winRate*100).toFixed(1)}%` : '—'}</td><td>{row.total}</td><td>{row.tickCount ? 'Receiving ticks' : 'Waiting'}</td></tr>)}</tbody></table></div> : <p className="empty-state">No Crash/Boom symbols are currently present in the active digit-contract symbol response. Lotus will not invent or substitute a market.</p>}
+        <small className="muted">This is a market monitor, not a scalping executor. Crash/Boom execution remains disabled until contract selection, quote validation, settlement tracking and server-side risk controls are implemented and tested.</small>
       </section>
-
-      <section className="panel">
-        <div className="panel-title"><div><div className="section-heading">LIVE DIGIT STREAM</div><p className="muted">Latest 60 final quote digits</p></div><span className="live-dot">LIVE FEED</span></div>
-        <div className="digits">{digits.slice(-60).map((digit, index, array) => <span key={ticks.slice(-60)[index]?.id ?? index} className={index === array.length - 1 ? 'last' : ''}>{digit}</span>)}</div>
+      <section className="panel market-scanner"><div className="panel-title"><div><div className="section-heading">DIGIT MARKET LEADERS</div><p className="muted">Differs research scanner across eligible markets.</p></div><span className="live-dot">{settings.currency ? 'QUOTE SCAN' : 'SET CURRENCY'}</span></div>
+        {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed hit rate · minimum 100 settled paper outcomes</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% from {highestWinRateMarket.total} outcomes</small></div>}
+        {bestMarket ? <div className="scanner-leader"><span>Best conservative-EV research candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed hit rate · barrier {bestMarket.quote!.barrier} · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} estimated EV per contract</small></div> : <p className="muted">No market currently passes the quote and sample-size research gates. A positive paper estimate would still not establish future profitability.</p>}
+        <div className="table-wrap"><table><thead><tr><th>Market</th><th>Barrier</th><th>Settled / matched</th><th>Hit rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Estimated EV</th></tr></thead><tbody>{scannerRows.map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.quote ? row.quote.barrier : '—'}</td><td>{row.total} / {row.matchedSample}</td><td>{row.winRate === null ? '—' : (row.winRate*100).toFixed(2)+'%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate*100).toFixed(2)+'%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv>=0?'+':''}${row.conservativeEv.toFixed(4)} ${settings.currency}`}</td></tr>)}{!scannerRows.length && <tr><td colSpan={7} className="empty">Waiting for eligible Differs markets…</td></tr>}</tbody></table></div>
+        <small className="muted">Estimated EV uses the Wilson 95% lower-bound paper hit rate for the quoted barrier. It is not realized P/L and does not correct for serial dependence or selection bias.</small>
       </section>
-
-      <section className="stats-grid">
-        <Metric label={settings.windowSize + '-tick sample'} value={stats.sample.toString()} />
-        <Metric label="Shannon entropy" value={stats.sample ? stats.entropy.toFixed(3) : '—'} />
-        <Metric label="All-session ticks" value={digits.length.toLocaleString()} />
-        <Metric label="Out-of-sample edge" value="Not tested" />
-      </section>
-
-      <section className="panel action-panel">
-        <div><div className="section-heading">EXECUTION CONTROL</div><p className="muted">Research continues independently of execution. Live orders remain locked until account authorization, settlement reconciliation and server-enforced risk controls are validated.</p></div>
-        <div className="control-row"><button className="start-button" disabled title="Execution backend is not connected">START ANALYSIS</button><button className="stop-button" disabled title="No execution worker is connected">STOP EXECUTION</button></div>
-        <small className="lock-note">RESEARCH FEED ACTIVE · LIVE EXECUTION DISABLED</small>
-      </section>
+      <section className="panel"><div className="panel-title"><div><div className="section-heading">CURRENT MARKET DIGIT STREAM</div><p className="muted">{marketName} · latest 60 final quote digits</p></div><span className="live-dot">LIVE FEED</span></div><div className="digits">{digits.slice(-60).map((digit,index,array)=><span key={ticks.slice(-60)[index]?.id ?? index} className={index===array.length-1?'last':''}>{digit}</span>)}</div></section>
+      <section className="stats-grid"><Metric label={settings.windowSize+'-tick sample'} value={stats.sample.toString()} /><Metric label="Shannon entropy" value={stats.sample?stats.entropy.toFixed(3):'—'} /><Metric label="All-session ticks" value={digits.length.toLocaleString()} /><Metric label="Out-of-sample edge" value="Not established" /></section>
     </>}
-
     {tab === 'engine' && <>
       <section className="panel engine-hero">
         <div className="section-heading">LOTUS DIGIT INTELLIGENCE</div><h2>Choose a research engine</h2>
