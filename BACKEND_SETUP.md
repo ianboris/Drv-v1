@@ -1,71 +1,75 @@
-# DDPE secure backend setup
+# DDPE Vercel + Neon setup
 
-This branch adds the first server-side connection layer. It does not enable Deriv trading.
+This repository is Vercel-only. There is no Netlify adapter, Netlify function, or Netlify configuration.
 
-## Vercel deployment (recommended)
+## 1. Vercel project configuration
 
-The repository includes `api/[...path].mjs`, which exposes the shared backend handler as a Vercel Web Function. Vercel's Node.js runtime supports standard Web Request/Response handlers. The Vite frontend builds to `dist`.
+Import `ianboris/Drv-v1` into Vercel and deploy the branch containing this change.
 
-1. Import `ianboris/Drv-v1` into Vercel.
-2. Select the `deploy/vercel-neon-adapter` branch for a preview deployment, or wait until the changes are reviewed and merged before using the production branch.
-3. Keep the build command as `npm run build` and output directory as `dist` (also specified in `vercel.json`).
-4. In Vercel Project Settings -> Environment Variables, add the three variables below for Preview first, then Production only after verification.
-5. Apply the Neon migration in the Neon SQL Editor.
-6. Deploy and test `https://YOUR-DEPLOYMENT/api/health` before attempting login.
+- Framework preset: Vite
+- Build command: `npm run build`
+- Output directory: `dist`
+- Node.js runtime: 20 or later
+- API function: `api/[...path].mjs`
 
-The shared API implementation still uses Node.js APIs and `@neondatabase/serverless`; this Vercel adapter is not a Cloudflare Workers adapter.
+The API route uses Vercel's standard Web Request/Response function interface and imports the backend implementation from `server/api-handler.mjs`.
 
-## Netlify alternative
+## 2. Configure server environment variables
 
-The same backend can still run on Netlify using the existing `netlify.toml` and function directory. Set the same variables in Netlify Site configuration -> Environment variables.
+In Vercel → Project → Settings → Environment Variables, add the following to Preview first. Add them to Production after Preview verification.
 
-## Required server environment variables
+- `DATABASE_URL`: copy the pooled connection string from the intended Neon project. Keep it server-side.
+- `DDPE_LOGIN_PASSWORD`: a new private app password of at least 16 characters.
+- `DDPE_SESSION_SECRET`: a random secret of at least 32 characters.
 
-Set these in your hosting provider's environment variables for the deployment contexts you intend to test:
+Do not paste credentials into GitHub files, frontend variables (such as `VITE_*`), or public issues. Rotate any credentials that were previously exposed.
 
-- `DATABASE_URL`: Neon pooled PostgreSQL connection string. Keep it server-side.
-- `DDPE_LOGIN_PASSWORD`: a new, strong app password of at least 16 characters. Do not reuse your Deriv token or another account password.
-- `DDPE_SESSION_SECRET`: at least 32 random characters. Generate a fresh secret and keep it private.
+## 3. Apply Neon migrations
 
-Never put these values in React code, localStorage, GitHub, or a public issue. If credentials were previously pasted into a chat or committed to a repository, rotate them.
+In the Neon SQL Editor, select the exact database referenced by `DATABASE_URL` and execute these files in order:
 
-## Apply the database migration
+1. `db/migrations/001_ddpe_core.sql`
+2. `db/migrations/002_tick_and_choice_identity.sql`
+3. `db/migrations/003_market_scanner_currency.sql`
 
-Run `db/migrations/001_ddpe_core.sql` against the intended Neon database once. Verify all five tables exist before testing the API.
+Use the ordinary Run action. Do not prepend `EXPLAIN` and do not use Explain/Explain Analyze for DDL migrations.
 
-## Deploy and test
+## 4. Deploy and verify
 
-The backend function is exposed through same-origin routes on Vercel and Netlify:
+After setting variables and applying migrations, redeploy the Vercel Preview deployment and open:
 
-- `GET /api/health`: reports whether the database and required app configuration are available.
-- `POST /api/login`: body: `{"password":"your app password"}`; sets a Secure, HttpOnly, SameSite=Strict session cookie.
-- `POST /api/logout`: clears the session cookie.
-- `GET /api/settings`: reads the server-side settings.
-- `PUT /api/settings`: saves validated settings.
-- `POST /api/ticks`: stores a validated tick for the single configured owner.
+`https://YOUR-DEPLOYMENT.vercel.app/api/health`
 
-The owner scope is currently a single-operator constant (`primary`). Do not use this as a multi-user identity system. The login password is a shared secret, so protect it and rotate it if exposed.
+Expected checks include:
 
-## Important limitations
+- `database_configured: true`
+- `database_connected: true`
+- `schema_ready: true`
+- `login_configured: true`
+- `session_secret_configured: true`
+- `ok: true`
 
-- The dashboard now uses the login screen and reads/writes settings through these API routes. The endpoints still require deployment configuration and live testing.
-- The authenticated browser collector posts live ticks to Neon in batches every five seconds while the dashboard is open. Historical ticks are used to seed the display but are not bulk-uploaded.
-- This backend does not authenticate with Deriv, request proposals, buy contracts, monitor open contracts, or enforce the daily loss stop against real trades.
-- No order execution is enabled. Keep it disabled until Deriv authentication, proposal/buy/settlement handling, persistent risk locking, duplicate-order protection and end-to-end tests are complete.
-- Netlify Functions are request-driven serverless functions, not an always-on WebSocket worker. This implementation is suitable for bounded API requests, not a permanent tick-stream execution daemon.
-- The health endpoint tests the database connection and reports configuration presence. It does not prove account authentication or trading readiness.
+If `database_configured` is false, the Vercel environment variable is missing or unavailable to that deployment environment. If it is true but `database_connected` is false, verify the connection string, Neon project/database/role, SSL, and Neon project availability. If the database connects but `schema_ready` is false, apply or verify all three migrations against the same Neon database.
 
+A successful health check proves database reachability and the expected schema, not Deriv authentication or trading readiness.
 
-## Data integrity migration
+## 5. API routes
 
-Before deploying the runtime-fix branch, apply `db/migrations/002_tick_and_choice_identity.sql` after migration 001. It backfills stable IDs for existing tick and choice rows, permits distinct ticks and paper outcomes within the same Unix second, and creates the persistent login-throttle table. The backend health endpoint checks for this table and reports `schema_ready: false` until the migration is applied.
+- `GET /api/health`
+- `POST /api/login`
+- `POST /api/logout`
+- `GET /api/session`
+- `GET /api/settings`
+- `PUT /api/settings`
+- `POST /api/ticks`
+- `GET /api/choices`
+- `POST /api/choices`
 
+The current owner scope is a single-operator constant (`primary`), not a multi-user identity system.
 
-## Market-data collection scope
+## 6. Operational limitations
 
-The browser collector requests the Deriv active-symbol list filtered to the DIGITDIFF contract type, then staggers historical seeding and live tick subscriptions for each returned underlying. The selected market controls the visible dashboard; all returned DIGITDIFF-capable markets are collected and their ticks/paper choices are persisted separately. If Deriv changes the active-symbol filter or returns no eligible symbols, check the browser's Deriv API error/status before assuming the feed is active.
-
-
-## Account currency and execution boundary
-
-The saved stake and daily-loss values are numeric amounts only. The application does not yet verify the Deriv account currency or account minimum stake. Do not interpret the displayed values as USD, and do not enable live purchases until the authenticated Deriv account currency and contract limits have been verified. Live execution remains disabled.
+- The browser collector posts live ticks while the dashboard is open. It is not a continuously running server worker.
+- No Deriv account authorization, contract purchase, real settlement monitoring, or server-enforced daily loss stop is implemented.
+- Stake and daily-loss settings are stored as configuration only; they do not constrain real orders because this build does not place orders.
+- Keep live execution disabled until authentication, proposals, buys, contract monitoring, persistent risk controls, and end-to-end tests exist.
