@@ -4,6 +4,8 @@ import {
   createHash,
   timingSafeEqual,
   randomBytes,
+  createCipheriv,
+  createDecipheriv,
 } from "node:crypto";
 
 const COOKIE_NAME = "ddpe_session";
@@ -50,6 +52,55 @@ function verify(token, secret) {
   } catch { return null; }
 }
 
+
+function derivEncryptionKey() {
+  const key = Buffer.from(requiredEnv("DERIV_TOKEN_ENCRYPTION_KEY", 40), "base64url");
+  if (key.length !== 32) throw new Error("DERIV_TOKEN_ENCRYPTION_KEY must be a base64url-encoded 32-byte key.");
+  return key;
+}
+
+function encryptDerivToken(token) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", derivEncryptionKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(token, "utf8"), cipher.final()]);
+  return { ciphertext: ciphertext.toString("base64url"), iv: iv.toString("base64url"), tag: cipher.getAuthTag().toString("base64url") };
+}
+
+function decryptDerivToken(row) {
+  const decipher = createDecipheriv("aes-256-gcm", derivEncryptionKey(), Buffer.from(row.token_iv, "base64url"));
+  decipher.setAuthTag(Buffer.from(row.token_tag, "base64url"));
+  return Buffer.concat([decipher.update(Buffer.from(row.token_ciphertext, "base64url")), decipher.final()]).toString("utf8");
+}
+
+async function derivAccounts(token) {
+  const response = await fetch("https://api.derivws.com/trading/v1/options/accounts", {
+    headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    signal: AbortSignal.timeout(12000),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(response.status === 401 ? "Deriv authorization expired. Reconnect your demo account." : "Deriv account lookup failed.");
+  const data = body?.data;
+  const accounts = Array.isArray(data) ? data : Array.isArray(data?.accounts) ? data.accounts : [];
+  return accounts;
+}
+
+function isDerivDemoAccount(account) {
+  return account?.account_type === "demo" || account?.account_type === "virtual" || account?.is_virtual === true;
+}
+
+async function derivConnection(sql) {
+  const rows = await sql`SELECT token_ciphertext, token_iv, token_tag, token_expires_at, selected_demo_account_id
+    FROM public.ddpe_deriv_connections WHERE owner_id = ${OWNER_ID} LIMIT 1`;
+  return rows[0] || null;
+}
+
+async function derivAccessToken(sql) {
+  const row = await derivConnection(sql);
+  if (!row) return null;
+  if (new Date(row.token_expires_at).getTime() <= Date.now() + 30000) return null;
+  return decryptDerivToken(row);
+}
+
 function cookieValue(header, name) {
   const item = (header || "").split(";").map((part) => part.trim()).find((part) => part.startsWith(name + "="));
   return item ? decodeURIComponent(item.slice(name.length + 1)) : "";
@@ -79,6 +130,57 @@ async function handle(request) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api(?:\/|$)/, "/").replace(/\/$/, "") || "/";
   const method = request.method.toUpperCase();
+
+
+  // OAuth callback is state-protected and intentionally does not require the
+  // Lotus session cookie: SameSite=Strict cookies are not sent on Deriv's
+  // cross-site redirect. The one-time state row binds this callback to a
+  // server-generated PKCE verifier.
+  if (method === "GET" && path === "/deriv/oauth/callback") {
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    const origin = url.origin;
+    const fail = (reason) => Response.redirect(new URL("/?deriv_error=" + encodeURIComponent(reason), origin), 303);
+    if (url.searchParams.has("error")) return fail("authorization_cancelled");
+    if (!code || !state || code.length > 4096 || state.length > 256) return fail("invalid_callback");
+    try {
+      const sql = getSql();
+      const stateHash = createHash("sha256").update(state).digest("hex");
+      const rows = await sql`DELETE FROM public.ddpe_deriv_oauth_states
+        WHERE state_hash = ${stateHash} AND expires_at > NOW()
+        RETURNING code_verifier`;
+      if (!rows[0]) return fail("state_expired_or_invalid");
+      const clientId = requiredEnv("DERIV_OAUTH_CLIENT_ID", 3);
+      const redirectUri = requiredEnv("DERIV_OAUTH_REDIRECT_URI", 20);
+      const tokenResponse = await fetch("https://auth.deriv.com/oauth2/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: clientId,
+          code,
+          code_verifier: rows[0].code_verifier,
+          redirect_uri: redirectUri,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const tokenBody = await tokenResponse.json().catch(() => ({}));
+      if (!tokenResponse.ok || typeof tokenBody.access_token !== "string" || !Number.isFinite(Number(tokenBody.expires_in))) {
+        return fail("token_exchange_failed");
+      }
+      const encrypted = encryptDerivToken(tokenBody.access_token);
+      const expiresAt = new Date(Date.now() + Number(tokenBody.expires_in) * 1000);
+      await sql`INSERT INTO public.ddpe_deriv_connections
+        (owner_id, token_ciphertext, token_iv, token_tag, token_expires_at, selected_demo_account_id, updated_at)
+        VALUES (${OWNER_ID}, ${encrypted.ciphertext}, ${encrypted.iv}, ${encrypted.tag}, ${expiresAt.toISOString()}, NULL, NOW())
+        ON CONFLICT (owner_id) DO UPDATE SET token_ciphertext = EXCLUDED.token_ciphertext,
+          token_iv = EXCLUDED.token_iv, token_tag = EXCLUDED.token_tag,
+          token_expires_at = EXCLUDED.token_expires_at, selected_demo_account_id = NULL, updated_at = NOW()`;
+      return Response.redirect(new URL("/?deriv=connected", origin), 303);
+    } catch {
+      return fail("connection_setup_failed");
+    }
+  }
 
   if (method === "GET" && path === "/health") {
     const checks = {
@@ -149,6 +251,100 @@ async function handle(request) {
   if (!session) return json({ error: "Authentication required." }, 401);
 
   if (method === "GET" && path === "/session") return json({ authenticated: true, expires_at: session.exp });
+
+  if (method === "POST" && path === "/deriv/oauth/start") {
+    assertSameOrigin(request);
+    try {
+      const clientId = requiredEnv("DERIV_OAUTH_CLIENT_ID", 3);
+      const redirectUri = requiredEnv("DERIV_OAUTH_REDIRECT_URI", 20);
+      const verifier = randomBytes(48).toString("base64url");
+      const challenge = createHash("sha256").update(verifier).digest("base64url");
+      const state = randomBytes(32).toString("base64url");
+      const sql = getSql();
+      await sql`DELETE FROM public.ddpe_deriv_oauth_states WHERE expires_at <= NOW()`;
+      await sql`INSERT INTO public.ddpe_deriv_oauth_states (state_hash, code_verifier, expires_at)
+        VALUES (${createHash("sha256").update(state).digest("hex")}, ${verifier}, NOW() + INTERVAL '10 minutes')`;
+      const authUrl = new URL("https://auth.deriv.com/oauth2/auth");
+      authUrl.search = new URLSearchParams({
+        response_type: "code",
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        scope: "trade",
+        state,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      }).toString();
+      return json({ authorization_url: authUrl.toString() });
+    } catch {
+      return json({ error: "Deriv OAuth is not configured. Register the Lotus callback URL and configure its OAuth client ID." }, 503);
+    }
+  }
+
+  if (method === "GET" && path === "/deriv/demo/status") {
+    const sql = getSql();
+    const row = await derivConnection(sql);
+    const connected = Boolean(row && new Date(row.token_expires_at).getTime() > Date.now());
+    return json({ connected, account_id: connected ? row.selected_demo_account_id : null,
+      token_expires_at: connected ? row.token_expires_at : null, mode: "DEMO_ONLY" });
+  }
+
+  if (method === "GET" && path === "/deriv/demo/accounts") {
+    const sql = getSql();
+    const token = await derivAccessToken(sql);
+    if (!token) return json({ error: "Deriv is not connected or its authorization expired.", reconnect_required: true }, 401);
+    try {
+      const accounts = await derivAccounts(token);
+      const demos = accounts.filter(isDerivDemoAccount).map((account) => ({
+        account_id: String(account.account_id || account.id || ""),
+        currency: String(account.currency || ""),
+        balance: Number.isFinite(Number(account.balance)) ? Number(account.balance) : null,
+        account_type: "demo",
+      })).filter((account) => account.account_id);
+      return json({ accounts: demos, mode: "DEMO_ONLY" });
+    } catch (error) {
+      return json({ error: error.message || "Could not load Deriv demo accounts." }, 502);
+    }
+  }
+
+  if (method === "POST" && path === "/deriv/demo/otp") {
+    assertSameOrigin(request);
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
+    const accountId = typeof body?.account_id === "string" ? body.account_id : "";
+    if (!accountId || accountId.length > 64) return json({ error: "A valid demo account ID is required." }, 400);
+    const sql = getSql();
+    const token = await derivAccessToken(sql);
+    if (!token) return json({ error: "Deriv is not connected or its authorization expired.", reconnect_required: true }, 401);
+    try {
+      const accounts = await derivAccounts(token);
+      const selected = accounts.find((account) => String(account.account_id || account.id || "") === accountId);
+      if (!selected || !isDerivDemoAccount(selected)) return json({ error: "Only verified Deriv demo accounts are allowed." }, 403);
+      const response = await fetch(`https://api.derivws.com/trading/v1/options/accounts/${encodeURIComponent(accountId)}/otp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+        signal: AbortSignal.timeout(12000),
+      });
+      const result = await response.json().catch(() => ({}));
+      const wsUrl = result?.data?.url;
+      if (!response.ok || typeof wsUrl !== "string" || !wsUrl.startsWith("wss://api.derivws.com/trading/v1/options/ws/demo?otp=")) {
+        return json({ error: "Deriv did not return a valid demo WebSocket URL." }, 502);
+      }
+      await sql`UPDATE public.ddpe_deriv_connections SET selected_demo_account_id = ${accountId}, updated_at = NOW() WHERE owner_id = ${OWNER_ID}`;
+      return json({ websocket_url: wsUrl, mode: "DEMO_ONLY", account_id: accountId });
+    } catch (error) {
+      return json({ error: error.message || "Could not open Deriv demo session." }, 502);
+    }
+  }
+
+  if (method === "POST" && path === "/deriv/demo/disconnect") {
+    assertSameOrigin(request);
+    const sql = getSql();
+    await sql`DELETE FROM public.ddpe_deriv_connections WHERE owner_id = ${OWNER_ID}`;
+    await sql`DELETE FROM public.ddpe_deriv_oauth_states`;
+    return json({ ok: true, connected: false });
+  }
+
+
 
   if (method === "GET" && path === "/settings") {
     const sql = getSql();
