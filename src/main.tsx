@@ -3,8 +3,8 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 
 const DERIV_APP_ID = (import.meta.env.VITE_DERIV_APP_ID || '').trim();
-// Deriv's legacy WebSocket app_id is the numeric ID assigned to a registered application.
-const DERIV_APP_ID_VALID = /^\d+$/.test(DERIV_APP_ID);
+// Use the registered Deriv application ID as supplied; do not assume a numeric format.
+const DERIV_APP_ID_VALID = DERIV_APP_ID.length > 0;
 const WS = DERIV_APP_ID_VALID
   ? `wss://ws.derivws.com/websockets/v3?app_id=${encodeURIComponent(DERIV_APP_ID)}`
   : '';
@@ -101,7 +101,7 @@ function App() {
     if (!authenticated) { setStatus('LOCKED'); return; }
     if (!DERIV_APP_ID_VALID) {
       setStatus('CONFIGURATION REQUIRED');
-      setError(DERIV_APP_ID ? 'Deriv connection is disabled. VITE_DERIV_APP_ID must be the numeric ID of an application registered with Deriv.' : 'Deriv connection is disabled. Set VITE_DERIV_APP_ID to your registered numeric Deriv application ID in Vercel and redeploy.');
+      setError('Deriv connection is disabled. Set VITE_DERIV_APP_ID to your registered Deriv application ID in Vercel and redeploy.');
       return;
     }
     ticksBySymbolRef.current.clear();
