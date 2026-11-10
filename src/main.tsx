@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './style.css';
 import { calculateContractEconomics } from './riskCalculator';
 import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
+import { digitFromQuote, normalizePipSize } from './market-data.mjs';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -38,16 +39,6 @@ function readSettings(): Settings {
       currency: typeof parsed.currency === 'string' ? parsed.currency.trim().toUpperCase() : ''
     };
   } catch { return DEFAULT_SETTINGS; }
-}
-
-function digitFromQuote(quote: number, pipSize?: number): number {
-  if (!Number.isFinite(quote)) return 0;
-  // Deriv pip_size is the number of decimal places, not a fractional price increment.
-  const decimals = Number.isInteger(pipSize) && Number(pipSize) >= 0 && Number(pipSize) <= 10
-    ? Number(pipSize)
-    : ((String(quote).split('.')[1] || '').length);
-  const fixed = quote.toFixed(decimals);
-  return Number((fixed.split('.')[1] || fixed).slice(-1) || 0);
 }
 
 function getStats(digits: number[]) {
@@ -288,9 +279,8 @@ function App() {
             list.forEach((item, index) => {
               const marketSymbol = item.underlying_symbol;
               if (!marketSymbol) return;
-              if (Number.isInteger(item.pip_size) && Number(item.pip_size) >= 0 && Number(item.pip_size) <= 10) {
-                pipSizesBySymbolRef.current.set(marketSymbol, Number(item.pip_size));
-              }
+              const symbolPrecision = normalizePipSize(item.pip_size);
+              if (symbolPrecision !== undefined) pipSizesBySymbolRef.current.set(marketSymbol, symbolPrecision);
               // Seed every DIGITDIFF-capable market and subscribe to each live stream.
               const delay = index * 75;
               subscriptionTimers.push(window.setTimeout(() => {
@@ -324,10 +314,8 @@ function App() {
               epoch: Number(times[i]),
               source: 'history' as const,
             })).filter((tick) => Number.isFinite(tick.quote) && Number.isSafeInteger(tick.epoch));
-            const responsePrecision = Number(response.pip_size);
-            if (Number.isInteger(responsePrecision) && responsePrecision >= 0 && responsePrecision <= 10) {
-              pipSizesBySymbolRef.current.set(historySymbol, responsePrecision);
-            }
+            const responsePrecision = normalizePipSize(response.pip_size, prices.at(-1));
+            if (responsePrecision !== undefined) pipSizesBySymbolRef.current.set(historySymbol, responsePrecision);
             const precision = pipSizesBySymbolRef.current.get(historySymbol);
             const merged = new Map<string, Tick>();
             [...history, ...(ticksBySymbolRef.current.get(historySymbol) || [])].forEach((tick) => merged.set(tick.id, tick));
@@ -358,8 +346,8 @@ function App() {
             if (!marketSymbol) return;
             const quote = Number(response.tick.quote);
             const epoch = Number(response.tick.epoch);
-            const responsePrecision = response.tick.pip_size !== undefined ? Number(response.tick.pip_size) : undefined;
-            if (responsePrecision !== undefined && Number.isInteger(responsePrecision) && responsePrecision >= 0 && responsePrecision <= 10) {
+            const responsePrecision = normalizePipSize(response.tick.pip_size, quote);
+            if (responsePrecision !== undefined) {
               pipSizesBySymbolRef.current.set(marketSymbol, responsePrecision);
               if (marketSymbol === selectedSymbolRef.current) setPipSize(responsePrecision);
             }
