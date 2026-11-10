@@ -143,6 +143,7 @@ function App() {
   const ws = useRef<WebSocket | null>(null);
   const demoWs = useRef<WebSocket | null>(null);
   const demoOrderRequestsRef = useRef<Map<number, DemoOrderRequest>>(new Map());
+  const demoOrderTimeoutsRef = useRef<Map<number, number>>(new Map());
   const demoTradeMapRef = useRef<Map<string, DemoDigitTrade>>(new Map());
   const openDemoContractRef = useRef<string | null>(null);
   const demoAutoTradingRef = useRef(false);
@@ -201,6 +202,8 @@ function App() {
   }, [authenticated]);
 
   useEffect(() => () => {
+    for (const timer of demoOrderTimeoutsRef.current.values()) window.clearTimeout(timer);
+    demoOrderTimeoutsRef.current.clear();
     demoSessionWantedRef.current = false;
     demoConnectionGenerationRef.current += 1;
     if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
@@ -723,6 +726,32 @@ function App() {
     }, delay);
   }
 
+  function clearDemoOrderTimeout(reqId: number) {
+    const timer = demoOrderTimeoutsRef.current.get(reqId);
+    if (timer !== undefined) window.clearTimeout(timer);
+    demoOrderTimeoutsRef.current.delete(reqId);
+  }
+
+  function armDemoOrderTimeout(reqId: number, kind: 'proposal' | 'buy', timeoutMs: number) {
+    clearDemoOrderTimeout(reqId);
+    const timer = window.setTimeout(() => {
+      demoOrderTimeoutsRef.current.delete(reqId);
+      const pending = demoOrderRequestsRef.current.get(reqId);
+      if (!pending || pending.kind !== kind) return;
+      demoOrderRequestsRef.current.delete(reqId);
+      if (kind === 'buy') {
+        // A timed-out buy may have reached Deriv even if its acknowledgement did not reach us.
+        // Pause rather than retry: the user must inspect Deriv's demo contract history first.
+        demoAutoTradingRef.current = false;
+        setDemoAutoTrading(false);
+        setDemoTradeMessage('BUY ACKNOWLEDGEMENT TIMED OUT. Bot paused to prevent a duplicate purchase. Check the selected Deriv demo account contract history before restarting.');
+      } else {
+        setDemoTradeMessage('NO PROPOSAL RESPONSE FROM DERIV WITHIN 12 SECONDS. No buy was submitted. Check the demo socket and Deriv API error message, then reconnect if needed.');
+      }
+    }, timeoutMs);
+    demoOrderTimeoutsRef.current.set(reqId, timer);
+  }
+
   async function connectDemoExecutionSocket(accountId: string, generation: number) {
     if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current) return;
     setDemoSocketStatus('CONNECTING');
@@ -833,6 +862,8 @@ function App() {
         // Never replay an uncertain buy. If its acknowledgement was lost, pause the bot
         // and reconnect only to restore monitoring; this avoids duplicate purchases.
         const uncertainBuy = [...demoOrderRequestsRef.current.values()].some(request => request.kind === 'buy');
+        for (const timer of demoOrderTimeoutsRef.current.values()) window.clearTimeout(timer);
+        demoOrderTimeoutsRef.current.clear();
         demoOrderRequestsRef.current.clear();
         if (uncertainBuy) {
           demoAutoTradingRef.current = false;
@@ -859,13 +890,25 @@ function App() {
           return;
         }
         if (data.error) {
-          if (Number.isInteger(reqId)) demoOrderRequestsRef.current.delete(reqId);
-          setDemoTradeMessage('Deriv rejected the demo request: ' + String(data.error.message || 'Unknown API error'));
+          const failedRequest = demoOrderRequestsRef.current.get(reqId);
+          if (Number.isInteger(reqId)) {
+            clearDemoOrderTimeout(reqId);
+            demoOrderRequestsRef.current.delete(reqId);
+          }
+          const message = String(data.error.message || data.error.code || 'Unknown API error');
+          if (failedRequest?.kind === 'buy') {
+            demoAutoTradingRef.current = false;
+            setDemoAutoTrading(false);
+            setDemoTradeMessage('Deriv rejected the demo BUY request: ' + message + '. Bot paused; no automatic retry was attempted.');
+          } else {
+            setDemoTradeMessage('Deriv rejected the demo ' + (failedRequest?.kind || 'request') + ': ' + message);
+          }
           return;
         }
         if (data.msg_type === 'proposal' && data.proposal) {
           const request = demoOrderRequestsRef.current.get(reqId);
           if (!request || request.kind !== 'proposal') return;
+          clearDemoOrderTimeout(reqId);
           demoOrderRequestsRef.current.delete(reqId);
           if (!demoAutoTradingRef.current || openDemoContractRef.current || demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit || demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) {
             setDemoTradeMessage('Demo purchase cancelled because the bot was stopped or the next full stake would exceed the daily loss limit.');
@@ -879,10 +922,12 @@ function App() {
           }
           const buyReqId = demoRequestIdRef.current++;
           demoOrderRequestsRef.current.set(buyReqId, { ...request, kind: 'buy', proposalId, askPrice });
+          armDemoOrderTimeout(buyReqId, 'buy', 15000);
           try {
             socket.send(JSON.stringify({ buy: proposalId, price: askPrice, req_id: buyReqId }));
             setDemoTradeMessage('Fresh quote received. Submitting demo purchase…');
           } catch {
+            clearDemoOrderTimeout(buyReqId);
             demoOrderRequestsRef.current.delete(buyReqId);
             demoAutoTradingRef.current = false;
             setDemoAutoTrading(false);
@@ -893,6 +938,7 @@ function App() {
         if (data.msg_type === 'buy' && data.buy) {
           const request = demoOrderRequestsRef.current.get(reqId);
           if (!request || request.kind !== 'buy') return;
+          clearDemoOrderTimeout(reqId);
           demoOrderRequestsRef.current.delete(reqId);
           const contractId = String(data.buy.contract_id || '');
           if (!/^\d+$/.test(contractId)) {
@@ -1032,9 +1078,18 @@ function App() {
     demoLastOrderAtRef.current = Date.now();
     const reqId = demoRequestIdRef.current++;
     demoOrderRequestsRef.current.set(reqId, { kind: 'proposal', symbol: marketSymbol, strategy, targetDigit });
+    armDemoOrderTimeout(reqId, 'proposal', 12000);
     const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : 'DIGITMATCH';
-    socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), req_id: reqId }));
-    setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
+    try {
+      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), req_id: reqId }));
+      setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
+    } catch {
+      clearDemoOrderTimeout(reqId);
+      demoOrderRequestsRef.current.delete(reqId);
+      demoAutoTradingRef.current = false;
+      setDemoAutoTrading(false);
+      setDemoTradeMessage('Could not send the demo proposal request. Bot paused; reconnect the demo execution socket.');
+    }
   }
 
   function requestMarketProposal(marketSymbol: string, marketTicks?: Tick[]) {
