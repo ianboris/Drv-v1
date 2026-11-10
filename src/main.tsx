@@ -321,7 +321,7 @@ function App() {
             [...history, ...(ticksBySymbolRef.current.get(historySymbol) || [])].forEach((tick) => merged.set(tick.id, tick));
             let nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
             if (precision !== undefined) {
-              nextTicks = nextTicks.map((tick) => tick.source === 'live' && tick.pipSize === undefined
+              nextTicks = nextTicks.map((tick) => tick.pipSize === undefined
                 ? { ...tick, pipSize: precision, lastDigit: digitFromQuote(tick.quote, precision) }
                 : tick);
               nextTicks.filter((tick) => tick.source === 'live' && tick.pipSize !== undefined).forEach((tick) => {
