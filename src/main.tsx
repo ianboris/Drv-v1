@@ -1168,7 +1168,7 @@ function App() {
     if (!marketSymbol || !socket || socket.readyState !== WebSocket.OPEN) return;
     // One selected-market stream avoids exhausting Deriv's subscription capacity.
     socket.send(JSON.stringify({ forget_all: 'ticks' }));
-    socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 1000, end: 'latest', style: 'ticks', req_id: 1000 }));
+    socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 5000, end: 'latest', style: 'ticks', req_id: 1000 }));
     socket.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 }));
   }
 
