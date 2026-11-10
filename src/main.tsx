@@ -696,14 +696,9 @@ function App() {
   const qualifiedMarkets = scannerRows.filter((row) => row.matchedSample >= 100 && row.quote && row.conservativeEv !== null && row.conservativeEv > 0);
   const bestMarket = qualifiedMarkets[0] || null;
   const highestWinRateMarket = scannerRows.filter((row) => row.total >= 100 && row.winRate !== null).sort((a, b) => (b.winRate ?? -1) - (a.winRate ?? -1))[0] || null;
-  const differsEstimate = stats.sample ? (1 - stats.barrierRate) * 100 : 0;
   const symbolOutcomes = choiceOutcomes.filter((item) => item.symbol === symbol);
   // The journal is scoped to the currently selected market. Historical records from other symbols remain in storage for research, but are not mixed into this market's journal view.
   const marketResearchDecisions = researchDecisions.filter((item) => item.symbol === symbol);
-  const overviewSettled = researchDecisions.filter(item => item.correct !== null);
-  const overviewWins = overviewSettled.filter(item => item.correct === true).length;
-  const overviewLosses = overviewSettled.length - overviewWins;
-  const overviewWinRate = overviewSettled.length ? overviewWins / overviewSettled.length * 100 : null;
   const accountDemoTrades = demoTrades.filter(trade => trade.accountId === selectedDemoAccountId);
   const settledDemoTrades = accountDemoTrades.filter(trade => trade.status !== 'OPEN');
   const demoRealizedPnl = settledDemoTrades.reduce((sum, trade) => sum + (Number.isFinite(trade.pnl) ? trade.pnl : 0), 0);
