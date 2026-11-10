@@ -86,6 +86,16 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
   return (p + z2 / (2 * total) - z * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total)) / (1 + z2 / total);
 }
 
+// Validate against a chronological held-out segment of the already-loaded Deriv history.
+// This avoids waiting for 100 additional live paper outcomes before requesting a demo quote.
+function getWalkForwardEvidence(ticks: Tick[], strategy: 'DIFFERS' | 'MATCHES', windowSize: number): WalkForwardBacktestResult | null {
+  const digits = ticks.slice(-5000)
+    .map(tick => tick.lastDigit)
+    .filter((digit): digit is number => typeof digit === 'number' && Number.isInteger(digit) && digit >= 0 && digit <= 9);
+  if (digits.length < windowSize + 100) return null;
+  return runWalkForwardBacktest(digits, strategy, windowSize);
+}
+
 function App() {
   useEffect(() => { if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined); }, []);
   const [tab, setTab] = useState<Tab>('overview');
@@ -122,8 +132,6 @@ function App() {
   const [proposalQuotes, setProposalQuotes] = useState<Record<string, ProposalQuote>>({});
   const [choiceAggregates, setChoiceAggregates] = useState<ChoiceAggregate[]>([]);
   const [researchDecisions, setResearchDecisions] = useState<ResearchDecision[]>([]);
-  const researchDecisionsRef = useRef<ResearchDecision[]>([]);
-  researchDecisionsRef.current = researchDecisions;
   const selectedDemoAccount = derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId);
   const demoCurrency = selectedDemoAccount?.currency || '';
   const demoCurrencyRef = useRef(demoCurrency);
@@ -681,6 +689,21 @@ function App() {
   const overviewWins = overviewSettled.filter(item => item.correct === true).length;
   const overviewLosses = overviewSettled.length - overviewWins;
   const overviewWinRate = overviewSettled.length ? overviewWins / overviewSettled.length * 100 : null;
+  const accountDemoTrades = demoTrades.filter(trade => trade.accountId === selectedDemoAccountId);
+  const settledDemoTrades = accountDemoTrades.filter(trade => trade.status !== 'OPEN');
+  const demoRealizedPnl = settledDemoTrades.reduce((sum, trade) => sum + (Number.isFinite(trade.pnl) ? trade.pnl : 0), 0);
+  const demoWinningTrades = settledDemoTrades.filter(trade => trade.pnl > 0).length;
+  const demoWinRate = settledDemoTrades.length ? demoWinningTrades / settledDemoTrades.length * 100 : null;
+  const overviewDemoMarketLeaders = Array.from(settledDemoTrades.reduce((map, trade) => {
+    const current = map.get(trade.symbol) || { symbol: trade.symbol, pnl: 0, trades: 0, wins: 0 };
+    current.pnl += trade.pnl;
+    current.trades += 1;
+    if (trade.pnl > 0) current.wins += 1;
+    map.set(trade.symbol, current);
+    return map;
+  }, new Map<string, {symbol:string;pnl:number;trades:number;wins:number}>()).values())
+    .map(row => ({...row, name: symbols.find(item => item.underlying_symbol === row.symbol)?.underlying_symbol_name || row.symbol}))
+    .sort((a,b) => b.pnl-a.pnl);
   const overviewMarketLeaders = Array.from(researchDecisions.reduce((map, item) => {
     if (item.correct === null) return map;
     const current = map.get(item.symbol) || { symbol: item.symbol, wins: 0, losses: 0, total: 0 };
@@ -919,13 +942,12 @@ function App() {
             return;
           }
           const payout = Number(data.proposal.payout);
-          const evidence = researchDecisionsRef.current.filter(item => item.symbol === request.symbol && item.strategy === request.strategy && item.correct !== null).sort((a, b) => a.predictedEpoch - b.predictedEpoch).slice(-500);
-          if (evidence.length < 100 || !Number.isFinite(payout) || payout <= askPrice) {
-            setDemoTradeMessage(`Quote rejected: insufficient settled evidence (${evidence.length}/100) or invalid payout. No purchase was sent.`);
+          const evidence = getWalkForwardEvidence(ticksBySymbolRef.current.get(request.symbol) || [], request.strategy, settingsRef.current.windowSize);
+          if (!evidence || evidence.testTrades < 100 || !Number.isFinite(payout) || payout <= askPrice) {
+            setDemoTradeMessage(`Quote rejected: insufficient historical walk-forward evidence (${evidence?.testTrades ?? 0}/100 test predictions) or invalid payout. No purchase was sent.`);
             return;
           }
-          const evidenceWins = evidence.filter(item => item.correct === true).length;
-          const conservativeWinProbability = wilsonLowerBound(evidenceWins, evidence.length);
+          const conservativeWinProbability = wilsonLowerBound(evidence.wins, evidence.testTrades);
           const conservativeExpectedValue = conservativeWinProbability * payout - askPrice;
           if (!(conservativeExpectedValue > 0)) {
             setDemoTradeMessage(`No purchase: conservative estimated value is ${conservativeExpectedValue.toFixed(4)} ${demoCurrencyRef.current} at ${(conservativeWinProbability * 100).toFixed(2)}% lower-bound win probability.`);
@@ -1084,12 +1106,12 @@ function App() {
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
     if (demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Daily demo profit target already reached. Bot stopped.'); return; }
     if (demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Another full stake would exceed the daily loss limit. Bot stopped before requesting a quote.'); return; }
-    const evidence = researchDecisionsRef.current.filter(item => item.symbol === marketSymbol && item.strategy === strategy && item.correct !== null).sort((a, b) => a.predictedEpoch - b.predictedEpoch).slice(-500);
-    if (evidence.length < 100) {
-      setDemoTradeMessage(`Building ${strategy} evidence: ${evidence.length}/100 settled one-tick outcomes. No purchase will be sent before the sample is sufficient.`);
+    const evidence = getWalkForwardEvidence(ticksBySymbolRef.current.get(marketSymbol) || [], strategy, settingsRef.current.windowSize);
+    if (!evidence || evidence.testTrades < 100) {
+      setDemoTradeMessage(`Loading historical validation: ${evidence?.testTrades ?? 0}/100 out-of-sample predictions. No purchase will be sent until enough historical ticks are available.`);
       return;
     }
-    if (Date.now() - demoLastOrderAtRef.current < 5000) return;
+    if (Date.now() - demoLastOrderAtRef.current < 1000) return;
     if (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9) return;
     demoLastOrderAtRef.current = Date.now();
     const reqId = demoRequestIdRef.current++;
@@ -1193,7 +1215,7 @@ function App() {
 
   return <main className={theme === 'light' ? 'theme-light' : 'theme-dark'}>
     <header className="topbar">
-      <div><div className="eyebrow">LOTUS · DERIV RESEARCH</div><h1>Lotus</h1><p className="subhead">Deriv digit intelligence · research first</p></div>
+      <div><div className="eyebrow">LOTUS · DERIV SYNTHETICS</div><h1>Lotus</h1><p className="subhead">Digit trading terminal · live intelligence and demo execution</p></div>
       <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />MARKET {status}</span><span className={derivDemoConnected ? "status online account-status" : "status account-status"}><i />{derivDemoConnected ? "DERIV AUTHORIZED · DEMO" : "DEMO ACCOUNT NOT LINKED"}</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
@@ -1208,27 +1230,28 @@ function App() {
     <section className="mode-banner">
       <span className={status === 'CONNECTED' ? 'mode-light active' : 'mode-light'} />
       <div><strong>LOTUS ENGINE</strong><small>{status === 'CONNECTED' ? 'LIVE MARKET FEED · RESEARCH MODE' : 'HISTORICAL MODE · LAST AVAILABLE DATA'}</small></div>
-      <span className="execution-lock">EXECUTION LOCKED</span>
+      <span className="execution-lock">{demoAutoTrading ? 'DEMO BOT ARMED' : demoSocketStatus === 'CONNECTED' ? 'DEMO CHANNEL READY' : 'DEMO EXECUTION DISARMED'}</span>
     </section>
     {error && <div className="error" role="alert">{error}</div>}
 
     {tab === 'overview' && <>
       <section className="overview-intro">
-        <div><div className="section-heading">TRADING COMMAND CENTRE</div><h2>Performance at a glance</h2><p className="muted">Account results and strongest digit research markets in one place.</p></div>
-        <span className="execution-lock">RESEARCH ONLY · EXECUTION LOCKED</span>
+        <div><div className="section-heading">LOTUS COMMAND CENTRE</div><h2>Trading performance</h2><p className="muted">Realized demo results, market leaders and the current execution state.</p></div>
+        <span className="execution-lock">{demoAutoTrading ? 'DEMO AUTOMATION ACTIVE' : 'DEMO MODE'}</span>
       </section>
-      <section className="overview-money-grid">
-        <div className="panel money-card"><span>REALIZED P/L</span><strong>—</strong><small>No contracts have been executed and settled through Lotus. No profit figure is available.</small></div>
-        <div className="panel money-card"><span>DEMO ACCOUNT BALANCE</span><strong>{derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId)?.balance == null ? '—' : `${derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId)!.balance!.toFixed(2)} ${derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId)!.currency}`}</strong><small>{derivDemoConnected ? 'Balance returned when demo accounts were loaded' : 'Connect a Deriv demo account in Settings'}</small></div>
-        <div className="panel money-card"><span>SETTLED RESEARCH RECORDS</span><strong>{overviewSettled.length.toLocaleString()}</strong><small>{overviewWins} correct · {overviewLosses} incorrect · {overviewWinRate === null ? 'No settled sample yet' : `${overviewWinRate.toFixed(1)}% observed hit rate`}</small></div>
-        <div className="panel money-card"><span>MARKETS WITH RESEARCH</span><strong>{overviewMarketLeaders.length}</strong><small>{symbols.length} digit-contract markets currently available in the feed</small></div>
+<section className="overview-money-grid">
+        <div className="panel money-card money-primary"><span>REALIZED DEMO P/L</span><strong className={demoRealizedPnl >= 0 ? 'pnl-positive' : 'pnl-negative'}>{demoRealizedPnl >= 0 ? '+' : ''}{demoRealizedPnl.toFixed(2)} {demoCurrency}</strong><small>Settled contracts recorded in this browser for the selected demo account</small></div>
+        <div className="panel money-card"><span>DEMO BALANCE</span><strong>{selectedDemoAccount?.balance == null ? '—' : selectedDemoAccount.balance.toFixed(2) + ' ' + demoCurrency}</strong><small>{selectedDemoAccount ? 'Last balance returned by Deriv' : 'Connect a verified demo account'}</small></div>
+        <div className="panel money-card"><span>DEMO WIN RATE</span><strong>{demoWinRate === null ? '—' : demoWinRate.toFixed(1) + '%'}</strong><small>{demoWinningTrades} wins from {settledDemoTrades.length} settled demo contracts</small></div>
+        <div className="panel money-card"><span>TOP MONEY-MAKING MARKET</span><strong>{overviewDemoMarketLeaders[0]?.name || '—'}</strong><small>{overviewDemoMarketLeaders[0] ? (overviewDemoMarketLeaders[0].pnl >= 0 ? '+' : '') + overviewDemoMarketLeaders[0].pnl.toFixed(2) + ' ' + demoCurrency + ' · ' + overviewDemoMarketLeaders[0].trades + ' settled' : 'No settled market results yet'}</small></div>
+        <div className="panel money-card"><span>SETTLED DEMO CONTRACTS</span><strong>{settledDemoTrades.length.toLocaleString()}</strong><small>{accountDemoTrades.filter(trade => trade.status === 'OPEN').length} currently open · {accountDemoTrades.length} recorded</small></div>
       </section>
-      <section className="overview-grid">
-        <div className="panel"><div className="panel-title"><div><div className="section-heading">TOP RESEARCH PERFORMERS</div><p className="muted">Ranked by settled paper hit rate, with sample size shown. These are not money-making rankings.</p></div></div>
-          {overviewMarketLeaders.length ? <div className="table-wrap"><table><thead><tr><th>Market</th><th>Hit rate</th><th>Wins / losses</th><th>Samples</th></tr></thead><tbody>{overviewMarketLeaders.slice(0,5).map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td>{(row.rate*100).toFixed(1)}%</td><td>{row.wins} / {row.losses}</td><td>{row.total}</td></tr>)}</tbody></table></div> : <p className="empty-state">No settled research records yet. Start a research session and let the outcomes accumulate.</p>}
+            <section className="overview-grid">
+        <div className="panel"><div className="panel-title"><div><div className="section-heading">DEMO P/L LEADERS</div><p className="muted">Markets ranked by recorded realized demo profit, not paper hit rate.</p></div></div>
+          {overviewDemoMarketLeaders.length ? <div className="table-wrap"><table><thead><tr><th>Market</th><th>Realized P/L</th><th>Win rate</th><th>Trades</th></tr></thead><tbody>{overviewDemoMarketLeaders.slice(0,5).map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td className={row.pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}>{row.pnl >= 0 ? '+' : ''}{row.pnl.toFixed(2)} {demoCurrency}</td><td>{(row.wins/row.trades*100).toFixed(1)}%</td><td>{row.trades}</td></tr>)}</tbody></table></div> : <p className="empty-state">No settled demo contracts yet. Demo P/L leaders will appear here after contract settlements are recorded.</p>}
         </div>
-        <div className="panel"><div className="section-heading">SESSION SNAPSHOT</div>
-          <div className="candidate-row"><span>Selected market</span><strong>{marketName}</strong></div><div className="candidate-row"><span>Latest quote</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong></div><div className="candidate-row"><span>Ticks cached</span><strong>{digits.length.toLocaleString()}</strong></div><div className="candidate-row"><span>Feed status</span><strong>{status}</strong></div><div className="candidate-row"><span>Demo authorization</span><strong>{derivDemoConnected ? 'Connected' : 'Not connected'}</strong></div>
+        <div className="panel"><div className="section-heading">LIVE SESSION</div>
+          <div className="candidate-row"><span>Selected market</span><strong>{marketName}</strong></div><div className="candidate-row"><span>Latest quote</span><strong>{ticks.at(-1)?.quote ?? '—'}</strong></div><div className="candidate-row"><span>Last digit</span><strong>{digits.at(-1) ?? '—'}</strong></div><div className="candidate-row"><span>Live feed</span><strong>{status}</strong></div><div className="candidate-row"><span>Demo execution</span><strong>{demoSocketStatus}</strong></div><div className="candidate-row"><span>Bot state</span><strong>{demoAutoTrading ? 'ARMED' : 'STOPPED'}</strong></div>
           <button className="secondary-button" onClick={()=>setTab('settings')}>Account and risk settings</button>
         </div>
       </section>
@@ -1243,8 +1266,8 @@ function App() {
     </>}
     {tab === 'engine' && <>
       <section className="panel engine-hero">
-        <div className="section-heading">LOTUS DIGIT INTELLIGENCE</div><h2>Choose a research engine</h2>
-        <p className="muted">Both engines score the next observed tick. These are frequency baselines, not proven predictive edges.</p>
+        <div className="section-heading">DIGIT EXECUTION COCKPIT</div><h2>Choose your trading engine</h2>
+        <p className="muted">Live target selection is driven by the rolling digit window. Demo purchases are gated by historical walk-forward results and a fresh payout-adjusted quote.</p>
         <div className="strategy-switch">
           <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
           <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
@@ -1278,7 +1301,7 @@ function App() {
         <div className="candidate-row"><span>Daily profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} {demoCurrency}</strong></div>
         <div className="demo-execution-actions">
           <button className="secondary-button" disabled={!derivDemoConnected || !selectedDemoAccountId || demoSocketStatus === 'CONNECTING' || demoSocketStatus === 'CONNECTED' || derivDemoBusy} onClick={openDerivDemoSession}>CONNECT DEMO EXECUTION</button>
-          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Building or checking settled evidence before requesting a purchase quote.`); }}>START DEMO BOT</button>
+          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Checking historical walk-forward evidence and waiting for the next eligible quote.`); }}>START DEMO BOT</button>
           <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; for (const [id, request] of demoOrderRequestsRef.current) if (request.kind === 'proposal') demoOrderRequestsRef.current.delete(id); setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any submitted buy or open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
@@ -1286,7 +1309,7 @@ function App() {
           {[...demoTrades.filter(trade => trade.accountId === selectedDemoAccountId)].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
           {!demoTrades.some(trade => trade.accountId === selectedDemoAccountId) && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a demo execution session, choose Differs or Matches, then start the demo bot.</td></tr>}
         </tbody></table></div>
-        <small className="muted">Controls: one open contract at a time, 5-second cooldown and a browser-enforced daily loss and profit stops. The bot runs only while this dashboard remains open. These controls are demo safeguards, not server-enforced live risk controls. Even/Odd remains research-only.</small>
+        <small className="muted">Controls: one open contract at a time, 1-second cooldown and browser-enforced daily loss and profit stops. Historical walk-forward validation uses the already-loaded tick history; it does not wait for 100 new live paper outcomes. The bot runs only while this dashboard remains open. These controls are demo safeguards, not server-enforced live risk controls. Even/Odd remains research-only.</small>
       </section>
       <section className="panel"><div className="section-heading">LIVE TRADING MASTER SWITCH</div><div className="master-row"><div><strong>Live execution</strong><p className="muted">Locked pending account authorization, verified settlement reconciliation and server-enforced risk controls.</p></div><div className="master-actions"><button className="master-switch" disabled aria-pressed={liveMaster}>OFF · LOCKED</button><button className="stop-button" onClick={() => setLiveMaster(false)}>STOP EXECUTION</button></div></div></section>
       <section className="panel"><div className="section-heading">CROSS-MARKET RESEARCH</div><p className="muted">Public market ticks are collected while this dashboard is open. Closing the browser stops the live collector in this version.</p><div className="candidate-row"><span>Markets subscribed</span><strong>{symbols.length}</strong></div><div className="candidate-row"><span>Live tick stream</span><strong>{status}</strong></div><div className="candidate-row"><span>Persisted research decisions</span><strong>{researchDecisions.length}</strong></div></section>
