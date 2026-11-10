@@ -745,6 +745,17 @@ function App() {
         body: JSON.stringify({ account_id: accountId }),
       });
       const result = await response.json().catch(() => ({}));
+      if (response.status === 401 || response.status === 403 || result.reconnect_required) {
+        demoSessionWantedRef.current = false;
+        demoAutoTradingRef.current = false;
+        setDemoAutoTrading(false);
+        setDerivDemoConnected(false);
+        setDemoSocketStatus('ERROR');
+        setDerivDemoBusy(false);
+        setDerivDemoMessage('Deriv authorization expired or the selected account is no longer eligible. Reconnect Deriv OAuth and select a verified demo account.');
+        setDemoTradeMessage('Demo bot paused because Deriv authorization must be renewed. No pending purchase will be replayed.');
+        return;
+      }
       if (!response.ok || !result.websocket_url) throw new Error(result.error || 'Could not obtain a fresh demo WebSocket URL.');
       if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current) return;
 
