@@ -131,6 +131,10 @@ function App() {
   const [researchDecisions, setResearchDecisions] = useState<ResearchDecision[]>([]);
   const selectedDemoAccount = derivDemoAccounts.find(account => account.account_id === selectedDemoAccountId);
   const demoCurrency = selectedDemoAccount?.currency || '';
+  const selectedDemoAccountIdRef = useRef(selectedDemoAccountId);
+  selectedDemoAccountIdRef.current = selectedDemoAccountId;
+  const demoCurrencyRef = useRef(demoCurrency);
+  demoCurrencyRef.current = demoCurrency;
   const [choiceOutcomes, setChoiceOutcomes] = useState<ChoiceOutcome[]>(() => {
     try { return JSON.parse(localStorage.getItem('ddpe-choice-outcomes-v1') || '[]') as ChoiceOutcome[]; }
     catch { return []; }
@@ -776,7 +780,7 @@ function App() {
               const nextDailyPnl = demoDailyPnlRef.current + profit;
               demoDailyPnlRef.current = nextDailyPnl;
               setDemoDailyPnl(nextDailyPnl);
-              try { localStorage.setItem(`${DEMO_DAILY_KEY}:${selectedDemoAccountId}`, JSON.stringify({ day: new Date().toISOString().slice(0, 10), pnl: nextDailyPnl })); } catch {}
+              try { localStorage.setItem(`${DEMO_DAILY_KEY}:${previous.accountId}`, JSON.stringify({ day: new Date().toISOString().slice(0, 10), pnl: nextDailyPnl })); } catch {}
               if (nextDailyPnl <= -settingsRef.current.dailyLossLimit) {
                 demoAutoTradingRef.current = false;
                 setDemoAutoTrading(false);
@@ -828,7 +832,8 @@ function App() {
     const socket = demoWs.current;
     if (!demoAutoTradingRef.current || !socket || socket.readyState !== WebSocket.OPEN) return;
     if (marketSymbol !== selectedSymbolRef.current || (strategy !== 'DIFFERS' && strategy !== 'MATCHES')) return;
-    if (!demoCurrency) { setDemoTradeMessage('Select a verified demo account with a known currency before trading.'); return; }
+    const accountCurrency = demoCurrencyRef.current;
+    if (!accountCurrency) { setDemoTradeMessage('Select a verified demo account with a known currency before trading.'); return; }
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
     if (demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Daily demo profit target already reached. Bot stopped.'); return; }
     if (demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Another full stake would exceed the daily loss limit. Bot stopped before requesting a quote.'); return; }
@@ -838,7 +843,7 @@ function App() {
     const reqId = demoRequestIdRef.current++;
     demoOrderRequestsRef.current.set(reqId, { kind: 'proposal', symbol: marketSymbol, strategy, targetDigit });
     const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : 'DIGITMATCH';
-    socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: demoCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), req_id: reqId }));
+    socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), req_id: reqId }));
     setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
   }
 
