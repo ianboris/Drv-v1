@@ -919,6 +919,19 @@ function App() {
             setDemoTradeMessage('Deriv returned an invalid demo proposal; no purchase was sent.');
             return;
           }
+          const payout = Number(data.proposal.payout);
+          const evidence = researchDecisionsRef.current.filter(item => item.symbol === request.symbol && item.strategy === request.strategy && item.correct !== null).slice(-500);
+          if (evidence.length < 100 || !Number.isFinite(payout) || payout <= askPrice) {
+            setDemoTradeMessage(`Quote rejected: insufficient settled evidence (${evidence.length}/100) or invalid payout. No purchase was sent.`);
+            return;
+          }
+          const evidenceWins = evidence.filter(item => item.correct === true).length;
+          const conservativeWinProbability = wilsonLowerBound(evidenceWins, evidence.length);
+          const conservativeExpectedValue = conservativeWinProbability * payout - askPrice;
+          if (!(conservativeExpectedValue > 0)) {
+            setDemoTradeMessage(`No purchase: conservative estimated value is ${conservativeExpectedValue.toFixed(4)} ${demoCurrencyRef.current} at ${(conservativeWinProbability * 100).toFixed(2)}% lower-bound win probability.`);
+            return;
+          }
           const buyReqId = demoRequestIdRef.current++;
           demoOrderRequestsRef.current.set(buyReqId, { ...request, kind: 'buy', proposalId, askPrice });
           armDemoOrderTimeout(buyReqId, 'buy', 15000);
@@ -1072,6 +1085,11 @@ function App() {
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
     if (demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Daily demo profit target already reached. Bot stopped.'); return; }
     if (demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Another full stake would exceed the daily loss limit. Bot stopped before requesting a quote.'); return; }
+    const evidence = researchDecisionsRef.current.filter(item => item.symbol === marketSymbol && item.strategy === strategy && item.correct !== null).slice(-500);
+    if (evidence.length < 100) {
+      setDemoTradeMessage(`Building ${strategy} evidence: ${evidence.length}/100 settled one-tick outcomes. No purchase will be sent before the sample is sufficient.`);
+      return;
+    }
     if (Date.now() - demoLastOrderAtRef.current < 5000) return;
     if (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9) return;
     demoLastOrderAtRef.current = Date.now();
@@ -1261,7 +1279,7 @@ function App() {
         <div className="candidate-row"><span>Daily profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} {demoCurrency}</strong></div>
         <div className="demo-execution-actions">
           <button className="secondary-button" disabled={!derivDemoConnected || !selectedDemoAccountId || demoSocketStatus === 'CONNECTING' || demoSocketStatus === 'CONNECTED' || derivDemoBusy} onClick={openDerivDemoSession}>CONNECT DEMO EXECUTION</button>
-          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Waiting for the next live tick and a fresh Deriv quote.`); }}>START DEMO BOT</button>
+          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Building or checking settled evidence before requesting a purchase quote.`); }}>START DEMO BOT</button>
           <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; for (const [id, request] of demoOrderRequestsRef.current) if (request.kind === 'proposal') demoOrderRequestsRef.current.delete(id); setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any submitted buy or open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
