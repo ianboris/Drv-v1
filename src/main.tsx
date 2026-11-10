@@ -149,6 +149,15 @@ function App() {
   const demoDailyPnlRef = useRef(demoDailyPnl);
   const demoRequestIdRef = useRef(7000);
   const demoLastOrderAtRef = useRef(0);
+  const demoReconnectAttemptRef = useRef(0);
+  const demoReconnectTimerRef = useRef<number | undefined>();
+  const demoSessionWantedRef = useRef(false);
+  const demoConnectionGenerationRef = useRef(0);
+  const demoHeartbeatIntervalRef = useRef<number | undefined>();
+  const demoHeartbeatTimeoutRef = useRef<number | undefined>();
+  const demoConnectTimeoutRef = useRef<number | undefined>();
+  const demoHeartbeatReqIdRef = useRef(950000);
+  const demoHeartbeatAwaitingRef = useRef(false);
   const reconnectTimer = useRef<number | undefined>();
   const pendingTicksRef = useRef<Array<{ tick_uid: string; symbol: string; epoch: number; quote: number; pip_size: number; last_digit: number }>>([]);
   const persistInFlightRef = useRef(false);
@@ -191,7 +200,16 @@ function App() {
     return () => { active = false; };
   }, [authenticated]);
 
-  useEffect(() => () => { demoWs.current?.close(); }, []);
+  useEffect(() => () => {
+    demoSessionWantedRef.current = false;
+    demoConnectionGenerationRef.current += 1;
+    if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
+    if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
+    if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+    if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
+    const socket = demoWs.current;
+    if (socket) { socket.onclose = null; socket.close(); }
+  }, []);
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
@@ -208,6 +226,8 @@ function App() {
     let stableConnectionTimer: number | undefined;
     let heartbeatInterval: number | undefined;
     let heartbeatTimeout: number | undefined;
+    let tickWatchdogInterval: number | undefined;
+    let lastMarketTickAt = 0;
     let heartbeatRequestId = 900000;
     let awaitingHeartbeat = false;
     const connect = () => {
@@ -226,6 +246,14 @@ function App() {
         console.info('[DERIV] WebSocket connected', { readyState: socket.readyState });
         setStatus('CONNECTED');
         setError('');
+        lastMarketTickAt = Date.now();
+        tickWatchdogInterval = window.setInterval(() => {
+          if (!alive || socket?.readyState !== WebSocket.OPEN) return;
+          if (Date.now() - lastMarketTickAt > 90000) {
+            console.warn('[DERIV] No market ticks received for 90 seconds; restarting public feed');
+            socket.close(4001, 'Market tick stream stale');
+          }
+        }, 15000);
         heartbeatInterval = window.setInterval(() => {
           if (!alive || socket?.readyState !== WebSocket.OPEN || awaitingHeartbeat) return;
           awaitingHeartbeat = true;
@@ -239,12 +267,13 @@ function App() {
         }, 30000);
         // Ask Deriv for underlyings supporting either digit contract family.
         // The current API no longer accepts product_type on active_symbols.
-        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF', 'DIGITMATCH', 'DIGITEVEN', 'DIGITODD'], req_id: 1 }));
+        socket.send(JSON.stringify({ active_symbols: 'brief', req_id: 1 }));
       };
       socket.onmessage = (event) => {
         if (!alive) return;
         try {
           const response = JSON.parse(event.data);
+          if (response.msg_type === 'tick' && response.tick) lastMarketTickAt = Date.now();
           if (response.msg_type === 'ping') {
             if (Number(response.req_id) === heartbeatRequestId - 1) {
               awaitingHeartbeat = false;
@@ -258,6 +287,7 @@ function App() {
             const failedReqId = Number(response.req_id);
             if (Number.isInteger(failedReqId)) proposalRequestsRef.current.delete(failedReqId);
             setError(response.error.message || 'Deriv API error');
+            if (failedReqId === 1 && socket?.readyState === WebSocket.OPEN) socket.close(4002, 'active_symbols request rejected');
             return;
           }
           if (response.msg_type === 'proposal' && response.proposal) {
@@ -481,6 +511,7 @@ function App() {
         if (stableConnectionTimer) window.clearTimeout(stableConnectionTimer);
         if (heartbeatInterval) window.clearInterval(heartbeatInterval);
         if (heartbeatTimeout) window.clearTimeout(heartbeatTimeout);
+        if (tickWatchdogInterval) window.clearInterval(tickWatchdogInterval);
         awaitingHeartbeat = false;
         if (!alive) return;
         subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
@@ -499,6 +530,7 @@ function App() {
       if (stableConnectionTimer) window.clearTimeout(stableConnectionTimer);
       if (heartbeatInterval) window.clearInterval(heartbeatInterval);
       if (heartbeatTimeout) window.clearTimeout(heartbeatTimeout);
+      if (tickWatchdogInterval) window.clearInterval(tickWatchdogInterval);
       subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
       if (socket) {
         if (socket.readyState === WebSocket.OPEN) {
@@ -687,35 +719,154 @@ function App() {
     }
   }
 
-  async function openDerivDemoSession() {
-    if (!selectedDemoAccountId) return;
+  function scheduleDemoReconnect(accountId: string, generation: number, reason: string) {
+    if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current) return;
+    if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
+    const delay = Math.min(30000, 1500 * (2 ** Math.min(demoReconnectAttemptRef.current, 5)));
+    demoReconnectAttemptRef.current += 1;
+    setDemoSocketStatus('CONNECTING');
+    setDerivDemoMessage(`Demo execution disconnected (${reason}). Reconnecting in ${Math.ceil(delay / 1000)}s…`);
+    demoReconnectTimerRef.current = window.setTimeout(() => {
+      demoReconnectTimerRef.current = undefined;
+      void connectDemoExecutionSocket(accountId, generation);
+    }, delay);
+  }
+
+  async function connectDemoExecutionSocket(accountId: string, generation: number) {
+    if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current) return;
+    setDemoSocketStatus('CONNECTING');
     setDerivDemoBusy(true);
-    setDerivDemoMessage('Requesting short-lived demo session…');
+    setDerivDemoMessage('Requesting a fresh one-time Deriv demo WebSocket URL…');
     try {
-      const response = await fetch('/api/deriv/demo/otp', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ account_id: selectedDemoAccountId }) });
-      const result = await response.json();
-      if (!response.ok || !result.websocket_url) throw new Error(result.error || 'Could not open demo session.');
-      demoWs.current?.close();
+      const response = await fetch('/api/deriv/demo/otp', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ account_id: accountId }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.status === 401 || response.status === 403 || result.reconnect_required) {
+        demoSessionWantedRef.current = false;
+        demoAutoTradingRef.current = false;
+        setDemoAutoTrading(false);
+        setDerivDemoConnected(false);
+        setDemoSocketStatus('ERROR');
+        setDerivDemoBusy(false);
+        setDerivDemoMessage('Deriv authorization expired or the selected account is no longer eligible. Reconnect Deriv OAuth and select a verified demo account.');
+        setDemoTradeMessage('Demo bot paused because Deriv authorization must be renewed. No pending purchase will be replayed.');
+        return;
+      }
+      if (!response.ok || !result.websocket_url) throw new Error(result.error || 'Could not obtain a fresh demo WebSocket URL.');
+      if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current) return;
+
+      const previousSocket = demoWs.current;
+      if (previousSocket) {
+        previousSocket.onclose = null;
+        previousSocket.close();
+      }
       const socket = new WebSocket(result.websocket_url);
       demoWs.current = socket;
+      demoConnectTimeoutRef.current = window.setTimeout(() => {
+        if (demoWs.current === socket && socket.readyState === WebSocket.CONNECTING) {
+          console.warn('[DERIV DEMO] WebSocket handshake timed out');
+          socket.close(4002, 'Demo connection timeout');
+        }
+      }, 15000);
       socket.onopen = () => {
+        if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
+        demoConnectTimeoutRef.current = undefined;
+        if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current || demoWs.current !== socket) {
+          socket.close();
+          return;
+        }
+        demoReconnectAttemptRef.current = 0;
         setDerivDemoMessage('DEMO WEBSOCKET CONNECTED · NO REAL FUNDS');
         setDemoSocketStatus('CONNECTED');
         setDemoTradeMessage('Demo order channel ready. Start a Differs or Matches demo session from the Engine page.');
         setDerivDemoBusy(false);
-        demoTrades.filter(trade => trade.accountId === selectedDemoAccountId && trade.status === 'OPEN').forEach(trade => {
-          demoTradeMapRef.current.set(trade.contractId, trade);
-          openDemoContractRef.current = trade.contractId;
-          socket.send(JSON.stringify({ proposal_open_contract: 1, contract_id: Number(trade.contractId), subscribe: 1, req_id: demoRequestIdRef.current++ }));
-        });
+
+        // Keep the authenticated channel alive; every reconnect obtains a new OTP.
+        if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
+        if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+        demoHeartbeatAwaitingRef.current = false;
+        demoHeartbeatIntervalRef.current = window.setInterval(() => {
+          if (demoWs.current !== socket || socket.readyState !== WebSocket.OPEN || demoHeartbeatAwaitingRef.current) return;
+          demoHeartbeatAwaitingRef.current = true;
+          const pingId = demoHeartbeatReqIdRef.current++;
+          try {
+            socket.send(JSON.stringify({ ping: 1, req_id: pingId }));
+            demoHeartbeatTimeoutRef.current = window.setTimeout(() => {
+              if (demoWs.current === socket && demoHeartbeatAwaitingRef.current && socket.readyState === WebSocket.OPEN) {
+                console.warn('[DERIV DEMO] Heartbeat timed out; reconnecting');
+                socket.close(4000, 'Demo heartbeat timeout');
+              }
+            }, 15000);
+          } catch {
+            socket.close(4001, 'Demo heartbeat send failed');
+          }
+        }, 60000);
+
+        // Restore settlement subscriptions for known open demo contracts after reconnect.
+        for (const trade of demoTradeMapRef.current.values()) {
+          if (trade.accountId === accountId && trade.status === 'OPEN') {
+            try {
+              socket.send(JSON.stringify({
+                proposal_open_contract: 1,
+                contract_id: Number(trade.contractId),
+                subscribe: 1,
+                req_id: demoRequestIdRef.current++,
+              }));
+            } catch (error) {
+              console.error('[DERIV DEMO] Could not restore contract subscription', error);
+            }
+          }
+        }
       };
-      socket.onerror = () => { setDerivDemoMessage('Demo WebSocket connection failed. Reconnect and inspect browser network diagnostics.'); setDemoSocketStatus('ERROR'); setDemoAutoTrading(false); setDerivDemoBusy(false); };
-      socket.onclose = () => { if (demoWs.current === socket) { setDerivDemoMessage('Demo WebSocket disconnected'); setDemoSocketStatus('DISCONNECTED'); setDemoAutoTrading(false); demoOrderRequestsRef.current.clear(); } };
-      setDemoSocketStatus('CONNECTING');
-      socket.onmessage = event => {
+      socket.onerror = () => {
+        if (demoWs.current !== socket || generation !== demoConnectionGenerationRef.current) return;
+        setDerivDemoMessage('Demo WebSocket transport error. Reconnecting with a fresh authorization URL…');
+        setDemoSocketStatus('ERROR');
+        socket.close();
+      };
+      socket.onclose = (event) => {
+        if (demoWs.current !== socket || generation !== demoConnectionGenerationRef.current) return;
+        demoWs.current = null;
+        if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
+        demoConnectTimeoutRef.current = undefined;
+        if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
+        if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+        demoHeartbeatIntervalRef.current = undefined;
+        demoHeartbeatTimeoutRef.current = undefined;
+        demoHeartbeatAwaitingRef.current = false;
+
+        // Never replay an uncertain buy. If its acknowledgement was lost, pause the bot
+        // and reconnect only to restore monitoring; this avoids duplicate purchases.
+        const uncertainBuy = [...demoOrderRequestsRef.current.values()].some(request => request.kind === 'buy');
+        demoOrderRequestsRef.current.clear();
+        if (uncertainBuy) {
+          demoAutoTradingRef.current = false;
+          setDemoAutoTrading(false);
+          setDemoTradeMessage('Connection dropped while a purchase acknowledgement was pending. Bot paused to prevent a duplicate; verify the Deriv demo account contract history.');
+        }
+        if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current) {
+          setDemoSocketStatus('DISCONNECTED');
+          setDerivDemoMessage('Deriv demo WebSocket disconnected');
+          return;
+        }
+        console.warn('[DERIV DEMO] WebSocket closed', { code: event.code, reason: event.reason, wasClean: event.wasClean });
+        scheduleDemoReconnect(accountId, generation, event.reason || `close code ${event.code}`);
+      };
+      socket.onmessage = (event) => {
+        if (demoWs.current !== socket || generation !== demoConnectionGenerationRef.current) return;
         let data: any;
         try { data = JSON.parse(event.data); } catch { return; }
         const reqId = Number(data.req_id);
+        if (data.msg_type === 'ping' && demoHeartbeatAwaitingRef.current) {
+          demoHeartbeatAwaitingRef.current = false;
+          if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+          demoHeartbeatTimeoutRef.current = undefined;
+          return;
+        }
         if (data.error) {
           if (Number.isInteger(reqId)) demoOrderRequestsRef.current.delete(reqId);
           setDemoTradeMessage('Deriv rejected the demo request: ' + String(data.error.message || 'Unknown API error'));
@@ -725,14 +876,27 @@ function App() {
           const request = demoOrderRequestsRef.current.get(reqId);
           if (!request || request.kind !== 'proposal') return;
           demoOrderRequestsRef.current.delete(reqId);
-          if (!demoAutoTradingRef.current || openDemoContractRef.current || demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit || demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { setDemoTradeMessage('Demo purchase cancelled because the bot was stopped or the next full stake would exceed the daily loss limit.'); return; }
+          if (!demoAutoTradingRef.current || openDemoContractRef.current || demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit || demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) {
+            setDemoTradeMessage('Demo purchase cancelled because the bot was stopped or the next full stake would exceed the daily loss limit.');
+            return;
+          }
           const proposalId = String(data.proposal.id || '');
           const askPrice = Number(data.proposal.ask_price);
-          if (!proposalId || !Number.isFinite(askPrice) || askPrice <= 0) { setDemoTradeMessage('Deriv returned an invalid demo proposal; no purchase was sent.'); return; }
+          if (!proposalId || !Number.isFinite(askPrice) || askPrice <= 0) {
+            setDemoTradeMessage('Deriv returned an invalid demo proposal; no purchase was sent.');
+            return;
+          }
           const buyReqId = demoRequestIdRef.current++;
           demoOrderRequestsRef.current.set(buyReqId, { ...request, kind: 'buy', proposalId, askPrice });
-          socket.send(JSON.stringify({ buy: proposalId, price: askPrice, req_id: buyReqId }));
-          setDemoTradeMessage('Fresh quote received. Submitting demo purchase…');
+          try {
+            socket.send(JSON.stringify({ buy: proposalId, price: askPrice, req_id: buyReqId }));
+            setDemoTradeMessage('Fresh quote received. Submitting demo purchase…');
+          } catch {
+            demoOrderRequestsRef.current.delete(buyReqId);
+            demoAutoTradingRef.current = false;
+            setDemoAutoTrading(false);
+            setDemoTradeMessage('Purchase could not be sent. Bot paused; no automatic retry was attempted.');
+          }
           return;
         }
         if (data.msg_type === 'buy' && data.buy) {
@@ -740,12 +904,23 @@ function App() {
           if (!request || request.kind !== 'buy') return;
           demoOrderRequestsRef.current.delete(reqId);
           const contractId = String(data.buy.contract_id || '');
-          if (!/^\d+$/.test(contractId)) { setDemoTradeMessage('Deriv did not return a valid contract ID.'); return; }
+          if (!/^\d+$/.test(contractId)) {
+            setDemoTradeMessage('Deriv did not return a valid contract ID.');
+            return;
+          }
           openDemoContractRef.current = contractId;
-          const trade: DemoDigitTrade = { contractId, accountId: selectedDemoAccountId, symbol: request.symbol, strategy: request.strategy, targetDigit: request.targetDigit, stake: Number(data.buy.buy_price ?? request.askPrice ?? settingsRef.current.stake), status: 'OPEN', pnl: 0, openedAt: Date.now() };
+          const trade: DemoDigitTrade = {
+            contractId, accountId, symbol: request.symbol, strategy: request.strategy,
+            targetDigit: request.targetDigit,
+            stake: Number(data.buy.buy_price ?? request.askPrice ?? settingsRef.current.stake),
+            status: 'OPEN', pnl: 0, openedAt: Date.now(),
+          };
           demoTradeMapRef.current.set(contractId, trade);
           setDemoTrades(previous => [...previous.filter(item => item.contractId !== contractId), trade].slice(-200));
-          socket.send(JSON.stringify({ proposal_open_contract: 1, contract_id: Number(contractId), subscribe: 1, req_id: demoRequestIdRef.current++ }));
+          socket.send(JSON.stringify({
+            proposal_open_contract: 1, contract_id: Number(contractId), subscribe: 1,
+            req_id: demoRequestIdRef.current++,
+          }));
           setDemoTradeMessage('DEMO CONTRACT OPEN · waiting for Deriv settlement.');
           return;
         }
@@ -757,7 +932,11 @@ function App() {
           const hasProfit = contract.profit !== undefined && contract.profit !== null && Number.isFinite(Number(contract.profit));
           const profit = hasProfit ? Number(contract.profit) : previous.pnl;
           const closed = Boolean(contract.is_sold) || ['won', 'lost', 'sold', 'expired'].includes(String(contract.status || '').toLowerCase());
-          const next: DemoDigitTrade = { ...previous, pnl: profit, status: closed ? String(contract.status || 'SETTLED').toUpperCase() : 'OPEN', closedAt: closed ? (previous.closedAt || Date.now()) : undefined };
+          const next: DemoDigitTrade = {
+            ...previous, pnl: profit,
+            status: closed ? String(contract.status || 'SETTLED').toUpperCase() : 'OPEN',
+            closedAt: closed ? (previous.closedAt || Date.now()) : undefined,
+          };
           demoTradeMapRef.current.set(contractId, next);
           setDemoTrades(items => items.map(item => item.contractId === contractId ? next : item));
           if (closed && previous.status === 'OPEN') {
@@ -766,7 +945,11 @@ function App() {
               const nextDailyPnl = demoDailyPnlRef.current + profit;
               demoDailyPnlRef.current = nextDailyPnl;
               setDemoDailyPnl(nextDailyPnl);
-              try { localStorage.setItem(`${DEMO_DAILY_KEY}:${previous.accountId}`, JSON.stringify({ day: new Date().toISOString().slice(0, 10), pnl: nextDailyPnl })); } catch {}
+              try {
+                localStorage.setItem(`${DEMO_DAILY_KEY}:${previous.accountId}`, JSON.stringify({
+                  day: new Date().toISOString().slice(0, 10), pnl: nextDailyPnl,
+                }));
+              } catch {}
               if (nextDailyPnl <= -settingsRef.current.dailyLossLimit) {
                 demoAutoTradingRef.current = false;
                 setDemoAutoTrading(false);
@@ -786,20 +969,50 @@ function App() {
       };
       setDerivDemoMessage('Connecting to verified demo account…');
     } catch (error) {
-      setDerivDemoMessage(error instanceof Error ? error.message : 'Demo connection failed.');
       setDerivDemoBusy(false);
+      const message = error instanceof Error ? error.message : 'Demo connection failed.';
+      if (demoSessionWantedRef.current && generation === demoConnectionGenerationRef.current) {
+        scheduleDemoReconnect(accountId, generation, message);
+      } else {
+        setDerivDemoMessage(message);
+        setDemoSocketStatus('ERROR');
+      }
     }
+  }
+
+  async function openDerivDemoSession() {
+    if (!selectedDemoAccountId) return;
+    const accountId = selectedDemoAccountId;
+    demoSessionWantedRef.current = true;
+    const generation = ++demoConnectionGenerationRef.current;
+    demoReconnectAttemptRef.current = 0;
+    if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
+    setDerivDemoBusy(true);
+    setDerivDemoMessage('Requesting short-lived demo session…');
+    await connectDemoExecutionSocket(accountId, generation);
   }
 
   async function disconnectDerivDemo() {
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) { setDemoTradeMessage('Wait for pending orders and the open one-tick contract to settle before disconnecting.'); return; }
+    demoSessionWantedRef.current = false;
+    demoConnectionGenerationRef.current += 1;
+    if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
+    if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
+    if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+    if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
+    demoReconnectTimerRef.current = undefined;
+    demoHeartbeatIntervalRef.current = undefined;
+    demoHeartbeatTimeoutRef.current = undefined;
+    const activeSocket = demoWs.current;
+    demoWs.current = null;
+    if (activeSocket) { activeSocket.onclose = null; activeSocket.close(); }
+    setDemoSocketStatus('DISCONNECTED');
     setDerivDemoBusy(true);
     try {
       demoAutoTradingRef.current = false;
       setDemoAutoTrading(false);
       demoSocketStatus === 'CONNECTED' && setDemoSocketStatus('DISCONNECTED');
       demoOrderRequestsRef.current.clear();
-      demoWs.current?.close();
       demoWs.current = null;
       const response = await fetch('/api/deriv/demo/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' });
       if (!response.ok) throw new Error('Could not disconnect Deriv.');
