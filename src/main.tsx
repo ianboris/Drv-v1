@@ -149,6 +149,15 @@ function App() {
   const demoDailyPnlRef = useRef(demoDailyPnl);
   const demoRequestIdRef = useRef(7000);
   const demoLastOrderAtRef = useRef(0);
+  const demoReconnectAttemptRef = useRef(0);
+  const demoReconnectTimerRef = useRef<number | undefined>();
+  const demoSessionWantedRef = useRef(false);
+  const demoConnectionGenerationRef = useRef(0);
+  const demoHeartbeatIntervalRef = useRef<number | undefined>();
+  const demoHeartbeatTimeoutRef = useRef<number | undefined>();
+  const demoConnectTimeoutRef = useRef<number | undefined>();
+  const demoHeartbeatReqIdRef = useRef(950000);
+  const demoHeartbeatAwaitingRef = useRef(false);
   const reconnectTimer = useRef<number | undefined>();
   const pendingTicksRef = useRef<Array<{ tick_uid: string; symbol: string; epoch: number; quote: number; pip_size: number; last_digit: number }>>([]);
   const persistInFlightRef = useRef(false);
@@ -191,7 +200,16 @@ function App() {
     return () => { active = false; };
   }, [authenticated]);
 
-  useEffect(() => () => { demoWs.current?.close(); }, []);
+  useEffect(() => () => {
+    demoSessionWantedRef.current = false;
+    demoConnectionGenerationRef.current += 1;
+    if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
+    if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
+    if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+    if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
+    const socket = demoWs.current;
+    if (socket) { socket.onclose = null; socket.close(); }
+  }, []);
 
   useEffect(() => {
     if (!authenticated) { setStatus('LOCKED'); return; }
@@ -737,7 +755,15 @@ function App() {
       }
       const socket = new WebSocket(result.websocket_url);
       demoWs.current = socket;
+      demoConnectTimeoutRef.current = window.setTimeout(() => {
+        if (demoWs.current === socket && socket.readyState === WebSocket.CONNECTING) {
+          console.warn('[DERIV DEMO] WebSocket handshake timed out');
+          socket.close(4002, 'Demo connection timeout');
+        }
+      }, 15000);
       socket.onopen = () => {
+        if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
+        demoConnectTimeoutRef.current = undefined;
         if (!demoSessionWantedRef.current || generation !== demoConnectionGenerationRef.current || demoWs.current !== socket) {
           socket.close();
           return;
@@ -794,6 +820,8 @@ function App() {
       socket.onclose = (event) => {
         if (demoWs.current !== socket || generation !== demoConnectionGenerationRef.current) return;
         demoWs.current = null;
+        if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
+        demoConnectTimeoutRef.current = undefined;
         if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
         if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
         demoHeartbeatIntervalRef.current = undefined;
@@ -945,7 +973,6 @@ function App() {
     if (!selectedDemoAccountId) return;
     const accountId = selectedDemoAccountId;
     demoSessionWantedRef.current = true;
-    demoAccountIdRef.current = accountId;
     const generation = ++demoConnectionGenerationRef.current;
     demoReconnectAttemptRef.current = 0;
     if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
@@ -961,6 +988,7 @@ function App() {
     if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
     if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
     if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+    if (demoConnectTimeoutRef.current) window.clearTimeout(demoConnectTimeoutRef.current);
     demoReconnectTimerRef.current = undefined;
     demoHeartbeatIntervalRef.current = undefined;
     demoHeartbeatTimeoutRef.current = undefined;
