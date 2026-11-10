@@ -919,7 +919,7 @@ function App() {
             return;
           }
           const payout = Number(data.proposal.payout);
-          const evidence = researchDecisionsRef.current.filter(item => item.symbol === request.symbol && item.strategy === request.strategy && item.correct !== null).slice(-500);
+          const evidence = researchDecisionsRef.current.filter(item => item.symbol === request.symbol && item.strategy === request.strategy && item.correct !== null).sort((a, b) => a.predictedEpoch - b.predictedEpoch).slice(-500);
           if (evidence.length < 100 || !Number.isFinite(payout) || payout <= askPrice) {
             setDemoTradeMessage(`Quote rejected: insufficient settled evidence (${evidence.length}/100) or invalid payout. No purchase was sent.`);
             return;
@@ -1084,7 +1084,7 @@ function App() {
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
     if (demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Daily demo profit target already reached. Bot stopped.'); return; }
     if (demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Another full stake would exceed the daily loss limit. Bot stopped before requesting a quote.'); return; }
-    const evidence = researchDecisionsRef.current.filter(item => item.symbol === marketSymbol && item.strategy === strategy && item.correct !== null).slice(-500);
+    const evidence = researchDecisionsRef.current.filter(item => item.symbol === marketSymbol && item.strategy === strategy && item.correct !== null).sort((a, b) => a.predictedEpoch - b.predictedEpoch).slice(-500);
     if (evidence.length < 100) {
       setDemoTradeMessage(`Building ${strategy} evidence: ${evidence.length}/100 settled one-tick outcomes. No purchase will be sent before the sample is sufficient.`);
       return;
