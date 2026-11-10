@@ -79,6 +79,10 @@ async function flushResearchQueue() {
   }
 }
 
+function formatUtc(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleString('en-GB', { timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+
 function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
   if (!total) return 0;
   const p = wins / total;
@@ -95,8 +99,9 @@ function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: '
   const cacheKey = `${marketSymbol}:${strategy}:${windowSize}`;
   const cached = walkForwardEvidenceCache.get(cacheKey);
   if (cached?.sampleId === sampleId) return cached.result;
+  // Preserve usable historical observations when lastDigit has not yet been attached.
   const digits = historyTicks
-    .map(tick => tick.lastDigit)
+    .map(tick => Number.isInteger(tick.lastDigit) ? Number(tick.lastDigit) : tick.pipSize !== undefined ? digitFromQuote(tick.quote, tick.pipSize) : null)
     .filter((digit): digit is number => typeof digit === 'number' && Number.isInteger(digit) && digit >= 0 && digit <= 9);
   if (digits.length < windowSize + 100) return null;
   const result = runWalkForwardBacktest(digits, strategy, windowSize);
@@ -1110,7 +1115,7 @@ function App() {
   function requestDemoDigitTrade(marketSymbol: string, strategy: ResearchStrategy, targetDigit: number) {
     const socket = demoWs.current;
     if (!demoAutoTradingRef.current || !socket || socket.readyState !== WebSocket.OPEN) return;
-    if (marketSymbol !== selectedSymbolRef.current || (strategy !== 'DIFFERS' && strategy !== 'MATCHES')) return;
+    if (marketSymbol !== selectedSymbolRef.current || strategy !== 'DIFFERS') return;
     const accountCurrency = demoCurrencyRef.current;
     if (!accountCurrency) { setDemoTradeMessage('Select a verified demo account with a known currency before trading.'); return; }
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
@@ -1277,7 +1282,7 @@ function App() {
     {tab === 'engine' && <>
       <section className="panel engine-hero">
         <div className="section-heading">DIGIT EXECUTION COCKPIT</div><h2>Choose your trading engine</h2>
-        <p className="muted">Live target selection is driven by the rolling digit window. Demo purchases are gated by historical walk-forward results and a fresh payout-adjusted quote.</p>
+        <p className="muted">Live target selection is driven by the rolling digit window. Demo purchases are DIFFERS-only and gated by chronological walk-forward results plus a fresh payout-adjusted quote. A failed gate blocks the purchase; it is not bypassed.</p>
         <div className="strategy-switch">
           <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
           <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
@@ -1288,10 +1293,10 @@ function App() {
           <span className="section-heading">{activeStrategy} · {marketName}</span>
           <div className="signal-digit">{activeStrategy === 'DIFFERS' ? (stats.barrier >= 0 ? stats.barrier : '—') : activeStrategy === 'MATCHES' ? (stats.sample ? stats.counts.indexOf(Math.max(...stats.counts)) : '—') : activeStrategy}</div>
           <div className="signal-label">{activeStrategy === 'EVEN' || activeStrategy === 'ODD' ? 'PREDICTED PARITY' : 'TARGET DIGIT'}</div><div className="confidence-track"><i style={{ width: (stats.sample ? Math.min(100, (activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : activeStrategy === 'MATCHES' ? Math.max(...stats.probabilities) : rollingDigits.filter(digit => activeStrategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / stats.sample) * 100) : 0) + '%' }} /></div>
-          <div className="candidate-row"><span>Observed baseline success rate</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : activeStrategy === 'MATCHES' ? Math.max(...stats.probabilities) : rollingDigits.filter(digit => activeStrategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / stats.sample) * 100).toFixed(2) + '%' : '—'}</strong></div>
+          <div className="candidate-row"><span>Prior-window frequency estimate · not a win probability</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : activeStrategy === 'MATCHES' ? Math.max(...stats.probabilities) : rollingDigits.filter(digit => activeStrategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / stats.sample) * 100).toFixed(2) + '%' : '—'}</strong></div>
           <div className="candidate-row"><span>Historical sample</span><strong>{stats.sample} / {settings.windowSize}</strong></div>
           <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
-          <p className="muted">Differs selects the least frequent digit; Matches selects the most frequent. Even and Odd score the next digit against the selected parity. All four are descriptive research baselines, can overfit noise, and do not establish a predictive edge.</p>
+          <p className="muted">Differs selects the least-frequent digit; Matches selects the most-frequent digit. These are rolling-frequency heuristics, not calibrated probabilities. MATCHES, EVEN and ODD are research-only; only DIFFERS can request a demo purchase, and only when its out-of-sample, payout-adjusted gate passes.</p>
         </div>
         <div className="control-row research-controls">
           <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START {activeStrategy} ANALYSIS</button>
@@ -1300,7 +1305,7 @@ function App() {
         <small className="lock-note">{analysisRunning ? activeStrategy + ' paper research running' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
       </section>
       <section className="panel demo-execution-panel">
-        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick Differs / Matches demo contracts through the authenticated Deriv demo WebSocket. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
+        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick DIFFERS demo contracts only. MATCHES remains research-only until it demonstrates a reliable out-of-sample edge. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
         <div className="candidate-row"><span>Selected demo account</span><strong>{selectedDemoAccountId || 'Not selected'}</strong></div>
         <div className="candidate-row"><span>Demo currency</span><strong>{demoCurrency || 'Unavailable'}</strong></div>
         <div className="candidate-row"><span>Execution socket</span><strong>{demoSocketStatus}</strong></div>
@@ -1311,7 +1316,7 @@ function App() {
         <div className="candidate-row"><span>Daily profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} {demoCurrency}</strong></div>
         <div className="demo-execution-actions">
           <button className="secondary-button" disabled={!derivDemoConnected || !selectedDemoAccountId || demoSocketStatus === 'CONNECTING' || demoSocketStatus === 'CONNECTED' || derivDemoBusy} onClick={openDerivDemoSession}>CONNECT DEMO EXECUTION</button>
-          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || !['DIFFERS','MATCHES'].includes(activeStrategy) || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Checking historical walk-forward evidence and waiting for the next eligible quote.`); }}>START DEMO BOT</button>
+          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || activeStrategy !== 'DIFFERS' || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Checking historical walk-forward evidence and waiting for the next eligible quote.`); }}>START DEMO BOT</button>
           <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; for (const [id, request] of demoOrderRequestsRef.current) if (request.kind === 'proposal') demoOrderRequestsRef.current.delete(id); setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any submitted buy or open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
@@ -1379,8 +1384,8 @@ function App() {
       <section className="panel">
         <div className="panel-title journal-toolbar"><div><div className="section-heading">FOUR-ENGINE RESEARCH JOURNAL · {marketName}</div><p className="muted">Only this selected market is shown. Decisions from other symbols are kept separate.</p></div><label className="journal-market-filter">Market<select value={symbol} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onChange={(event) => selectSymbol(event.target.value)}>{symbols.map((item) => <option key={item.underlying_symbol} value={item.underlying_symbol}>{item.underlying_symbol_name || item.underlying_symbol}</option>)}</select></label></div>
         <p className="muted">Each decision is saved before its next-tick result is known, then updated when the next tick arrives. Unresolved decisions remain pending if the feed disconnects.</p>
-        <div className="table-wrap"><table><thead><tr><th>Predicted (UTC)</th><th>Market</th><th>Engine</th><th>Target</th><th>Next digit</th><th>Empirical rate</th><th>Result</th></tr></thead><tbody>
-          {marketResearchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{new Date(item.predictedEpoch*1000).toLocaleString()}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.strategy === 'EVEN' ? 'Even' : item.strategy === 'ODD' ? 'Odd' : item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
+        <div className="table-wrap"><table><thead><tr><th>Predicted (UTC)</th><th>Market</th><th>Engine</th><th>Target</th><th>Next digit</th><th>Prior-window frequency (not win probability)</th><th>Result</th></tr></thead><tbody>
+          {marketResearchDecisions.slice(-100).reverse().map(item => <tr key={item.id}><td>{formatUtc(item.predictedEpoch)}</td><td>{item.symbol}</td><td>{item.strategy}</td><td>{item.strategy === 'EVEN' ? 'Even' : item.strategy === 'ODD' ? 'Odd' : item.targetDigit}</td><td>{item.outcomeDigit ?? 'Pending'}</td><td>{(item.empiricalRate*100).toFixed(1)}%</td><td className={item.correct === null ? '' : item.correct ? 'result-win' : 'result-loss'}>{item.correct === null ? 'Pending' : item.correct ? 'Win' : 'Loss'}</td></tr>)}
           {!marketResearchDecisions.length && <tr><td colSpan={7} className="empty">No journal entries for this market yet. Start one of the four research engines on this market after a full analysis window has loaded.</td></tr>}
         </tbody></table></div>
       </section>
