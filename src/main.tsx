@@ -893,7 +893,7 @@ function App() {
           if (!request || request.kind !== 'buy') return;
           demoOrderRequestsRef.current.delete(reqId);
           const contractId = String(data.buy.contract_id || '');
-          if (!/^\\d+$/.test(contractId)) {
+          if (!/^\d+$/.test(contractId)) {
             setDemoTradeMessage('Deriv did not return a valid contract ID.');
             return;
           }
