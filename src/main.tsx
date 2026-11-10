@@ -208,6 +208,8 @@ function App() {
     let stableConnectionTimer: number | undefined;
     let heartbeatInterval: number | undefined;
     let heartbeatTimeout: number | undefined;
+    let tickWatchdogInterval: number | undefined;
+    let lastMarketTickAt = 0;
     let heartbeatRequestId = 900000;
     let awaitingHeartbeat = false;
     const connect = () => {
@@ -226,6 +228,14 @@ function App() {
         console.info('[DERIV] WebSocket connected', { readyState: socket.readyState });
         setStatus('CONNECTED');
         setError('');
+        lastMarketTickAt = Date.now();
+        tickWatchdogInterval = window.setInterval(() => {
+          if (!alive || socket?.readyState !== WebSocket.OPEN) return;
+          if (Date.now() - lastMarketTickAt > 90000) {
+            console.warn('[DERIV] No market ticks received for 90 seconds; restarting public feed');
+            socket.close(4001, 'Market tick stream stale');
+          }
+        }, 15000);
         heartbeatInterval = window.setInterval(() => {
           if (!alive || socket?.readyState !== WebSocket.OPEN || awaitingHeartbeat) return;
           awaitingHeartbeat = true;
@@ -239,12 +249,13 @@ function App() {
         }, 30000);
         // Ask Deriv for underlyings supporting either digit contract family.
         // The current API no longer accepts product_type on active_symbols.
-        socket.send(JSON.stringify({ active_symbols: 'brief', contract_type: ['DIGITDIFF', 'DIGITMATCH', 'DIGITEVEN', 'DIGITODD'], req_id: 1 }));
+        socket.send(JSON.stringify({ active_symbols: 'brief', req_id: 1 }));
       };
       socket.onmessage = (event) => {
         if (!alive) return;
         try {
           const response = JSON.parse(event.data);
+          if (response.msg_type === 'tick' && response.tick) lastMarketTickAt = Date.now();
           if (response.msg_type === 'ping') {
             if (Number(response.req_id) === heartbeatRequestId - 1) {
               awaitingHeartbeat = false;
@@ -258,6 +269,7 @@ function App() {
             const failedReqId = Number(response.req_id);
             if (Number.isInteger(failedReqId)) proposalRequestsRef.current.delete(failedReqId);
             setError(response.error.message || 'Deriv API error');
+            if (failedReqId === 1 && socket?.readyState === WebSocket.OPEN) socket.close(4002, 'active_symbols request rejected');
             return;
           }
           if (response.msg_type === 'proposal' && response.proposal) {
@@ -481,6 +493,7 @@ function App() {
         if (stableConnectionTimer) window.clearTimeout(stableConnectionTimer);
         if (heartbeatInterval) window.clearInterval(heartbeatInterval);
         if (heartbeatTimeout) window.clearTimeout(heartbeatTimeout);
+        if (tickWatchdogInterval) window.clearInterval(tickWatchdogInterval);
         awaitingHeartbeat = false;
         if (!alive) return;
         subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
@@ -499,6 +512,7 @@ function App() {
       if (stableConnectionTimer) window.clearTimeout(stableConnectionTimer);
       if (heartbeatInterval) window.clearInterval(heartbeatInterval);
       if (heartbeatTimeout) window.clearTimeout(heartbeatTimeout);
+      if (tickWatchdogInterval) window.clearInterval(tickWatchdogInterval);
       subscriptionTimers.forEach((timer) => window.clearTimeout(timer));
       if (socket) {
         if (socket.readyState === WebSocket.OPEN) {
@@ -942,13 +956,24 @@ function App() {
 
   async function disconnectDerivDemo() {
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) { setDemoTradeMessage('Wait for pending orders and the open one-tick contract to settle before disconnecting.'); return; }
+    demoSessionWantedRef.current = false;
+    demoConnectionGenerationRef.current += 1;
+    if (demoReconnectTimerRef.current) window.clearTimeout(demoReconnectTimerRef.current);
+    if (demoHeartbeatIntervalRef.current) window.clearInterval(demoHeartbeatIntervalRef.current);
+    if (demoHeartbeatTimeoutRef.current) window.clearTimeout(demoHeartbeatTimeoutRef.current);
+    demoReconnectTimerRef.current = undefined;
+    demoHeartbeatIntervalRef.current = undefined;
+    demoHeartbeatTimeoutRef.current = undefined;
+    const activeSocket = demoWs.current;
+    demoWs.current = null;
+    if (activeSocket) { activeSocket.onclose = null; activeSocket.close(); }
+    setDemoSocketStatus('DISCONNECTED');
     setDerivDemoBusy(true);
     try {
       demoAutoTradingRef.current = false;
       setDemoAutoTrading(false);
       demoSocketStatus === 'CONNECTED' && setDemoSocketStatus('DISCONNECTED');
       demoOrderRequestsRef.current.clear();
-      demoWs.current?.close();
       demoWs.current = null;
       const response = await fetch('/api/deriv/demo/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' });
       if (!response.ok) throw new Error('Could not disconnect Deriv.');
