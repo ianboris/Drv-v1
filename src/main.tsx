@@ -1377,10 +1377,6 @@ function App() {
           <div className="input-wrap"><span>units</span><input type="number" min="0.01" max="10000" step="0.01" value={settings.takeProfitLimit} onChange={(event) => changeSetting('takeProfitLimit', Number(event.target.value))} /></div>
           <small>Stored risk preference only. It is not an active trading stop while execution is locked.</small>
         </label>
-        <label className="setting-field">Deriv account currency
-          <div className="input-wrap"><input type="text" value={demoCurrency || 'Connect a Deriv demo account'} readOnly /></div>
-          <small>Read directly from the selected, verified Deriv demo account. Currency is not manually configurable.</small>
-        </label>
         <label className="setting-field">Analysis window (ticks)
           <div className="input-wrap"><input type="number" min="50" max="5000" step="50" value={settings.windowSize} onChange={(event) => changeSetting('windowSize', Number(event.target.value))} /></div>
           <small>Changes the displayed rolling statistics. It does not by itself improve predictive accuracy.</small>
