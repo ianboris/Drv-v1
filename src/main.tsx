@@ -306,23 +306,13 @@ function App() {
           if (response.msg_type === 'active_symbols') {
             const list: ActiveSymbol[] = response.active_symbols || [];
             setSymbols(list);
-            list.forEach((item, index) => {
+            // Cache symbol precision, but keep exactly one live tick subscription.
+            // Subscribing to every returned market exhausted Deriv's subscription capacity.
+            list.forEach((item) => {
               const marketSymbol = item.underlying_symbol;
               if (!marketSymbol) return;
               const symbolPrecision = normalizePipSize(item.pip_size);
               if (symbolPrecision !== undefined) pipSizesBySymbolRef.current.set(marketSymbol, symbolPrecision);
-              // Seed every DIGITDIFF-capable market and subscribe to each live stream.
-              const delay = index * 75;
-              subscriptionTimers.push(window.setTimeout(() => {
-                if (alive && socket?.readyState === WebSocket.OPEN) {
-                  socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 1000, end: 'latest', style: 'ticks', req_id: 1000 + index }));
-                }
-              }, delay));
-              subscriptionTimers.push(window.setTimeout(() => {
-                if (alive && socket?.readyState === WebSocket.OPEN) {
-                  socket.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 + index }));
-                }
-              }, delay + 25));
             });
             const selected = selectedSymbolRef.current;
             if (list.length && !list.some((item) => item.underlying_symbol === selected)) {
@@ -330,6 +320,7 @@ function App() {
               if (first) selectSymbol(first);
             } else {
               setPipSize(pipSizesBySymbolRef.current.get(selected));
+              subscribeMarket(selected);
             }
           }
           if (response.msg_type === 'history') {
@@ -1063,6 +1054,15 @@ function App() {
     socket.send(JSON.stringify({ proposal: 1, amount: currentSettings.stake, basis: 'stake', contract_type: 'DIGITDIFF', currency: currentSettings.currency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(barrier), req_id: reqId }));
   }
 
+  function subscribeMarket(marketSymbol: string) {
+    const socket = ws.current;
+    if (!marketSymbol || !socket || socket.readyState !== WebSocket.OPEN) return;
+    // One selected-market stream avoids exhausting Deriv's subscription capacity.
+    socket.send(JSON.stringify({ forget_all: 'ticks' }));
+    socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 1000, end: 'latest', style: 'ticks', req_id: 1000 }));
+    socket.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 }));
+  }
+
   const selectSymbol = (nextSymbol: string) => {
     if (demoAutoTradingRef.current || openDemoContractRef.current) return;
     if (nextSymbol === selectedSymbolRef.current) return;
@@ -1072,24 +1072,25 @@ function App() {
     ticksRef.current = nextTicks;
     setTicks(nextTicks);
     setPipSize(pipSizesBySymbolRef.current.get(nextSymbol));
+    subscribeMarket(nextSymbol);
   };
 
   useEffect(() => {
     if (!authenticated || !settings.currency) { proposalRequestsRef.current.clear(); setProposalQuotes({}); return; }
     proposalRequestsRef.current.clear();
     setProposalQuotes({});
-    let quoteTimers: number[] = [];
-    const scheduleQuotes = () => {
-      quoteTimers.forEach((timerId) => window.clearTimeout(timerId));
-      quoteTimers = symbols.map((item, index) => window.setTimeout(() => requestMarketProposal(item.underlying_symbol), index * 75));
+    let quoteTimer: number | undefined;
+    const scheduleQuote = () => {
+      if (quoteTimer) window.clearTimeout(quoteTimer);
+      quoteTimer = window.setTimeout(() => requestMarketProposal(selectedSymbolRef.current), 500);
     };
-    scheduleQuotes();
+    scheduleQuote();
     const timer = window.setInterval(() => {
       setProposalQuotes((previous) => Object.fromEntries(Object.entries(previous).filter(([, quote]) => Date.now() - quote.quotedAt <= 90000)));
-      scheduleQuotes();
+      scheduleQuote();
     }, 60000);
-    return () => { window.clearInterval(timer); quoteTimers.forEach((timerId) => window.clearTimeout(timerId)); };
-  }, [authenticated, symbols, settings.currency, settings.stake, settings.windowSize]);
+    return () => { window.clearInterval(timer); if (quoteTimer) window.clearTimeout(quoteTimer); };
+  }, [authenticated, symbol, settings.currency, settings.stake, settings.windowSize]);
 
   const submitLogin = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1163,7 +1164,7 @@ function App() {
         {crashBoomRows.length ? <div className="table-wrap"><table><thead><tr><th>Index</th><th>Latest quote</th><th>Ticks cached</th><th>Paper hit rate</th><th>Settled</th><th>Feed</th></tr></thead><tbody>{crashBoomRows.map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.latestQuote ?? '—'}</td><td>{row.tickCount.toLocaleString()}</td><td>{row.total ? `${(row.winRate*100).toFixed(1)}%` : '—'}</td><td>{row.total}</td><td>{row.tickCount ? 'Receiving ticks' : 'Waiting'}</td></tr>)}</tbody></table></div> : <p className="empty-state">No Crash/Boom symbols are currently present in the active digit-contract symbol response. Lotus will not invent or substitute a market.</p>}
         <small className="muted">This is a market monitor, not a scalping executor. Crash/Boom execution remains disabled until contract selection, quote validation, settlement tracking and server-side risk controls are implemented and tested.</small>
       </section>
-      <section className="panel market-scanner"><div className="panel-title"><div><div className="section-heading">DIGIT MARKET LEADERS</div><p className="muted">Differs research scanner across eligible markets.</p></div><span className="live-dot">{settings.currency ? 'QUOTE SCAN' : 'SET CURRENCY'}</span></div>
+      <section className="panel market-scanner"><div className="panel-title"><div><div className="section-heading">DIGIT MARKET LEADERS</div><p className="muted">Historical Differs research across eligible markets. Live ticks and quotes follow the selected market only; select a row to switch the stream.</p></div><span className="live-dot">{settings.currency ? 'SELECTED-MARKET QUOTE' : 'SET CURRENCY'}</span></div>
         {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed hit rate · minimum 100 settled paper outcomes</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% from {highestWinRateMarket.total} outcomes</small></div>}
         {bestMarket ? <div className="scanner-leader"><span>Best conservative-EV research candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed hit rate · barrier {bestMarket.quote!.barrier} · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {settings.currency} estimated EV per contract</small></div> : <p className="muted">No market currently passes the quote and sample-size research gates. A positive paper estimate would still not establish future profitability.</p>}
         <div className="table-wrap"><table><thead><tr><th>Market</th><th>Barrier</th><th>Settled / matched</th><th>Hit rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Estimated EV</th></tr></thead><tbody>{scannerRows.map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.quote ? row.quote.barrier : '—'}</td><td>{row.total} / {row.matchedSample}</td><td>{row.winRate === null ? '—' : (row.winRate*100).toFixed(2)+'%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate*100).toFixed(2)+'%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv>=0?'+':''}${row.conservativeEv.toFixed(4)} ${settings.currency}`}</td></tr>)}{!scannerRows.length && <tr><td colSpan={7} className="empty">Waiting for eligible Differs markets…</td></tr>}</tbody></table></div>
