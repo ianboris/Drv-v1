@@ -86,14 +86,23 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
   return (p + z2 / (2 * total) - z * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total)) / (1 + z2 / total);
 }
 
-// Validate against a chronological held-out segment of the already-loaded Deriv history.
-// This avoids waiting for 100 additional live paper outcomes before requesting a demo quote.
-function getWalkForwardEvidence(ticks: Tick[], strategy: 'DIFFERS' | 'MATCHES', windowSize: number): WalkForwardBacktestResult | null {
-  const digits = ticks.slice(-5000)
+// Validate once per historical dataset/strategy/window. The cache prevents a full backtest
+// from running again on every live tick while still invalidating when the market history changes.
+const walkForwardEvidenceCache = new Map<string, { sampleId: string; result: WalkForwardBacktestResult }>();
+function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: 'DIFFERS' | 'MATCHES', windowSize: number): WalkForwardBacktestResult | null {
+  const historyTicks = ticks.filter(tick => tick.source === 'history').slice(-5000);
+  const sampleId = historyTicks.length ? historyTicks[historyTicks.length - 1].id : '';
+  const cacheKey = `${marketSymbol}:${strategy}:${windowSize}`;
+  const cached = walkForwardEvidenceCache.get(cacheKey);
+  if (cached?.sampleId === sampleId) return cached.result;
+  const digits = historyTicks
     .map(tick => tick.lastDigit)
     .filter((digit): digit is number => typeof digit === 'number' && Number.isInteger(digit) && digit >= 0 && digit <= 9);
   if (digits.length < windowSize + 100) return null;
-  return runWalkForwardBacktest(digits, strategy, windowSize);
+  const result = runWalkForwardBacktest(digits, strategy, windowSize);
+  if (walkForwardEvidenceCache.size > 100) walkForwardEvidenceCache.clear();
+  walkForwardEvidenceCache.set(cacheKey, { sampleId, result });
+  return result;
 }
 
 function App() {
@@ -948,7 +957,7 @@ function App() {
             return;
           }
           const payout = Number(data.proposal.payout);
-          const evidence = getWalkForwardEvidence(ticksBySymbolRef.current.get(request.symbol) || [], request.strategy, settingsRef.current.windowSize);
+          const evidence = getWalkForwardEvidence(request.symbol, ticksBySymbolRef.current.get(request.symbol) || [], request.strategy, settingsRef.current.windowSize);
           if (!evidence || evidence.testTrades < 100 || !Number.isFinite(payout) || payout <= askPrice) {
             setDemoTradeMessage(`Quote rejected: insufficient historical walk-forward evidence (${evidence?.testTrades ?? 0}/100 test predictions) or invalid payout. No purchase was sent.`);
             return;
@@ -1112,7 +1121,7 @@ function App() {
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
     if (demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Daily demo profit target already reached. Bot stopped.'); return; }
     if (demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) { demoAutoTradingRef.current = false; setDemoAutoTrading(false); setDemoTradeMessage('Another full stake would exceed the daily loss limit. Bot stopped before requesting a quote.'); return; }
-    const evidence = getWalkForwardEvidence(ticksBySymbolRef.current.get(marketSymbol) || [], strategy, settingsRef.current.windowSize);
+    const evidence = getWalkForwardEvidence(marketSymbol, ticksBySymbolRef.current.get(marketSymbol) || [], strategy, settingsRef.current.windowSize);
     if (!evidence || evidence.testTrades < 100) {
       setDemoTradeMessage(`Loading historical validation: ${evidence?.testTrades ?? 0}/100 out-of-sample predictions. No purchase will be sent until enough historical ticks are available.`);
       return;
