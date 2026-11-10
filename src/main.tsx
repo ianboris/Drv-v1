@@ -147,6 +147,7 @@ function App() {
   const pendingResearchRef = useRef<Map<string, PendingResearch>>(new Map());
   const analysisStateRef = useRef<{ running: boolean; strategy: ResearchStrategy }>({ running: false, strategy: 'DIFFERS' });
   const ticksBySymbolRef = useRef<Map<string, Tick[]>>(new Map());
+  const tickIdsBySymbolRef = useRef<Map<string, Set<string>>>(new Map());
   const pipSizesBySymbolRef = useRef<Map<string, number>>(new Map());
   const selectedSymbolRef = useRef(symbol);
   selectedSymbolRef.current = symbol;
@@ -370,6 +371,7 @@ function App() {
               });
             }
             ticksBySymbolRef.current.set(historySymbol, nextTicks);
+            tickIdsBySymbolRef.current.set(historySymbol, new Set(nextTicks.map(tick => tick.id)));
             requestMarketProposal(historySymbol, nextTicks);
             if (historySymbol === selectedSymbolRef.current) {
               ticksRef.current = nextTicks;
@@ -403,7 +405,10 @@ function App() {
                   : {}),
               };
               const currentTicks = ticksBySymbolRef.current.get(marketSymbol) || [];
-              if (!currentTicks.some((item) => item.id === tick.id)) {
+              const seenTickIds = tickIdsBySymbolRef.current.get(marketSymbol) || new Set<string>();
+              if (!seenTickIds.has(tick.id)) {
+                seenTickIds.add(tick.id);
+                tickIdsBySymbolRef.current.set(marketSymbol, seenTickIds);
                 if (tick.pipSize !== undefined && tick.lastDigit !== undefined) {
                   pendingTicksRef.current.push({
                     tick_uid: tick.id, symbol: marketSymbol, epoch, quote,
@@ -493,6 +498,7 @@ function App() {
                   ? [...currentTicks, tick]
                   : [...currentTicks, tick].sort((a, b) => a.epoch - b.epoch);
                 const nextTicks = appendedTicks.slice(-5000);
+                if (seenTickIds.size > 6000) tickIdsBySymbolRef.current.set(marketSymbol, new Set(nextTicks.map(item => item.id)));
                 ticksBySymbolRef.current.set(marketSymbol, nextTicks);
                 if (marketSymbol === selectedSymbolRef.current) {
                   ticksRef.current = nextTicks;
