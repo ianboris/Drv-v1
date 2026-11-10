@@ -479,7 +479,6 @@ function App() {
                         analysisWindow: windowSizeRef.current,
                       });
                     }
-                  }
                 }
                 const lastTick = currentTicks[currentTicks.length - 1];
                 const appendedTicks = !lastTick || tick.epoch >= lastTick.epoch
