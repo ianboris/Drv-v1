@@ -347,6 +347,89 @@ async function handle(request) {
 
 
 
+
+  if (method === "POST" && path === "/bot/start") {
+    assertSameOrigin(request);
+    if (process.env.BOT_ENVIRONMENT !== "staging" || process.env.BOT_MODE !== "plumbing_test") {
+      return json({ error: "Server worker start is restricted to BOT_ENVIRONMENT=staging and BOT_MODE=plumbing_test." }, 409);
+    }
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
+    const accountId = typeof body?.account_id === "string" ? body.account_id : "";
+    const symbol = typeof body?.symbol === "string" ? body.symbol : "";
+    if (!accountId || accountId.length > 64 || !/^[A-Za-z0-9_]{1,32}$/.test(symbol)) {
+      return json({ error: "A verified demo account ID and valid symbol are required." }, 400);
+    }
+    const sql = getSql();
+    const connection = await derivConnection(sql);
+    const token = await derivAccessToken(sql);
+    if (!connection || !token || connection.selected_demo_account_id !== accountId) {
+      return json({ error: "Select and connect the same Deriv demo account in Settings first." }, 409);
+    }
+    const accounts = await derivAccounts(token);
+    const selected = accounts.find((account) => String(account.account_id || account.id || "") === accountId);
+    if (!selected || !isDerivDemoAccount(selected)) return json({ error: "Only verified demo accounts can start the worker." }, 403);
+    const rows = await sql`UPDATE public.ddpe_bot_control
+      SET worker_epoch = worker_epoch + 1, desired_running = true, stop_requested = false,
+          mode = 'PLUMBING_TEST', demo_account_id = ${accountId}, symbol = ${symbol},
+          plumbing_remaining = 10, consecutive_losses = 0, last_error = NULL,
+          updated_at = NOW()
+      WHERE owner_id = ${OWNER_ID} AND in_flight_order_uid IS NULL AND buy_unknown = false
+      RETURNING worker_epoch, mode, symbol, plumbing_remaining`;
+    if (!rows.length) return json({ error: "Cannot start while an order is open or a buy outcome is unknown. Reconcile first." }, 409);
+    await sql`INSERT INTO public.ddpe_bot_events
+      (event_uid, owner_id, worker_epoch, event_type, mode, payload)
+      VALUES (${randomBytes(16).toString("hex")}, ${OWNER_ID}, ${rows[0].worker_epoch},
+        'WORKER_STARTED', 'PLUMBING_TEST', ${JSON.stringify({ accountId, symbol })}::jsonb)`;
+    return json({ ok: true, worker_epoch: Number(rows[0].worker_epoch), mode: rows[0].mode, symbol: rows[0].symbol });
+  }
+
+  if (method === "POST" && path === "/bot/stop") {
+    assertSameOrigin(request);
+    const sql = getSql();
+    const rows = await sql`UPDATE public.ddpe_bot_control
+      SET desired_running = false, stop_requested = true, updated_at = NOW()
+      WHERE owner_id = ${OWNER_ID}
+      RETURNING worker_epoch, mode, in_flight_order_uid, buy_unknown`;
+    if (!rows.length) return json({ error: "Worker control schema is not installed." }, 503);
+    await sql`INSERT INTO public.ddpe_bot_events
+      (event_uid, owner_id, worker_epoch, event_type, mode, payload)
+      VALUES (${randomBytes(16).toString("hex")}, ${OWNER_ID}, ${rows[0].worker_epoch},
+        'WORKER_STOP_REQUESTED', ${rows[0].mode}, ${JSON.stringify({ inFlight: Boolean(rows[0].in_flight_order_uid), buyUnknown: rows[0].buy_unknown })}::jsonb)`;
+    return json({ ok: true, stopped: true, monitoring_open_contract: Boolean(rows[0].in_flight_order_uid), reconciliation_required: Boolean(rows[0].buy_unknown) });
+  }
+
+  if (method === "GET" && path === "/bot/status") {
+    const sql = getSql();
+    const rows = await sql`SELECT worker_epoch, desired_running, stop_requested, mode, demo_account_id,
+      symbol, in_flight_order_uid, buy_unknown, buy_unknown_order_uid,
+      reconciliation_requested, worker_heartbeat_at, daily_loss_limit,
+      max_stake_pct, consecutive_loss_limit, consecutive_losses,
+      plumbing_remaining, last_error, updated_at
+      FROM public.ddpe_bot_control WHERE owner_id = ${OWNER_ID} LIMIT 1`;
+    if (!rows.length) return json({ installed: false, running: false });
+    const events = await sql`SELECT event_type, worker_epoch, order_uid, deriv_contract_id, payload, created_at
+      FROM public.ddpe_bot_events WHERE owner_id = ${OWNER_ID}
+      ORDER BY id DESC LIMIT 20`;
+    return json({ installed: true, control: rows[0], events });
+  }
+
+  if (method === "POST" && path === "/bot/reconcile") {
+    assertSameOrigin(request);
+    const sql = getSql();
+    const rows = await sql`UPDATE public.ddpe_bot_control
+      SET reconciliation_requested = true, updated_at = NOW()
+      WHERE owner_id = ${OWNER_ID} AND buy_unknown = true
+      RETURNING worker_epoch, mode, buy_unknown_order_uid`;
+    if (!rows.length) return json({ error: "There is no unresolved BUY_UNKNOWN state to reconcile." }, 409);
+    await sql`INSERT INTO public.ddpe_bot_events
+      (event_uid, owner_id, worker_epoch, event_type, mode, order_uid, payload)
+      VALUES (${randomBytes(16).toString("hex")}, ${OWNER_ID}, ${rows[0].worker_epoch},
+        'RECONCILIATION_REQUESTED', ${rows[0].mode}, ${rows[0].buy_unknown_order_uid},
+        '{"operator_requested":true}'::jsonb)`;
+    return json({ ok: true, reconciliation_requested: true, order_uid: rows[0].buy_unknown_order_uid });
+  }
+
   if (method === "GET" && path === "/settings") {
     const sql = getSql();
     const rows = await sql`SELECT stake::text, daily_loss_limit::text, take_profit_limit::text, analysis_window, account_currency FROM ddpe_settings WHERE owner_id = ${OWNER_ID} LIMIT 1`;
