@@ -475,7 +475,9 @@ async function handle(request) {
       (event_uid, owner_id, worker_epoch, event_type, order_uid, mode, payload)
     SELECT ${randomBytes(16).toString("hex")}, ${OWNER_ID}, worker_epoch,
       'RECONCILED', buy_unknown_order_uid, mode,
-      ${JSON.stringify({ result: "operator_confirmed_no_purchase", reason, operatorConfirmed: true })}::jsonb
+      jsonb_build_object('result', 'operator_confirmed_no_purchase',
+        'reason', ${reason}, 'operatorConfirmed', true,
+        'evidenceEventId', evidence_event_id)
     FROM resolved
     RETURNING worker_epoch, order_uid`;
     if (!rows.length) {
