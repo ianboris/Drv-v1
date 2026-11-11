@@ -15,7 +15,7 @@ test('payout snapshots require valid stake and gross payout', () => {
   ]);
   assert.equal(map.size, 1);
   assert.equal(map.get('R_10|DIFFERS|5|5').payout, 5.4);
-  const native = parsePayoutSnapshots([{ symbol: 'R_10', contract_type: 'DIGITDIFF', barrier: 3, amount: 2, ask_price: 2, payout: 2.2, currency: 'USD' }]);
+  const native = parsePayoutSnapshots({ snapshots: [{ symbol: 'R_10', contract_type: 'DIGITDIFF', barrier: 3, amount: 2, ask_price: 2, payout: 2.2, currency: 'USD' }] });
   assert.equal(native.get('R_10|DIFFERS|3|2').payout, 2.2);
 });
 
