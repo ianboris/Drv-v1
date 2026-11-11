@@ -73,8 +73,12 @@ an order or unknown buy remains unresolved.
 ## Verification boundary
 
 The worker polls Deriv tick history once per control cycle and deduplicates by
-latest tick epoch. It requests one-tick DIGITDIFF proposals only in the capped
-plumbing mode. It monitors confirmed contracts through settlement, including
+latest tick epoch. Proposal requests use Deriv's required `underlying_symbol`
+field. The worker does not buy a unary proposal ID: the current Deriv schema
+states that unary proposal IDs are informational, so the buy uses
+`buy: "1"` with the same explicit contract parameters and the proposal ask
+price as the maximum purchase price. This is restricted to one-tick DIGITDIFF
+plumbing contracts. It monitors confirmed contracts through settlement, including
 after a process restart, and exposes an operator-triggered reconciliation path
 for an unknown buy. A unique statement match is required; ambiguous or absent
 matches leave the durable halt and order slot intact.
