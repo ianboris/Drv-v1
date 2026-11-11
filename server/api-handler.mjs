@@ -423,6 +423,58 @@ async function handle(request) {
     return json({ installed: true, control: rows[0], events });
   }
 
+  if (method === "POST" && path === "/bot/reconcile/confirm-no-purchase") {
+    assertSameOrigin(request);
+    let body;
+    try { body = await request.json(); } catch { return json({ error: "Invalid JSON body." }, 400); }
+    const reason = typeof body?.reason === "string" ? body.reason.trim() : "";
+    if (body?.confirm_no_purchase !== true || reason.length < 10 || reason.length > 500) {
+      return json({ error: "Explicit confirmation and a 10–500 character review reason are required." }, 400);
+    }
+    const sql = getSql();
+    const rows = await sql`WITH eligible AS (
+      SELECT c.worker_epoch, c.mode, c.buy_unknown_order_uid,
+        (SELECT e.id FROM public.ddpe_bot_events e
+          WHERE e.owner_id = c.owner_id AND e.order_uid = c.buy_unknown_order_uid
+            AND e.event_type = 'RECONCILED'
+            AND e.payload->>'result' = 'no_matching_purchase_found'
+            AND e.created_at <= NOW() - INTERVAL '10 seconds'
+          ORDER BY e.id DESC LIMIT 1) AS evidence_event_id
+      FROM public.ddpe_bot_control c
+      WHERE c.owner_id = ${OWNER_ID} AND c.buy_unknown = true
+        AND (c.worker_lease_expires_at IS NULL OR c.worker_lease_expires_at <= NOW())
+        AND EXISTS (
+          SELECT 1 FROM public.ddpe_bot_events sent
+          WHERE sent.owner_id = c.owner_id AND sent.order_uid = c.buy_unknown_order_uid
+            AND sent.event_type = 'BUY_SENT'
+            AND sent.created_at <= NOW() - INTERVAL '60 seconds'
+        )
+    ), resolved AS (
+      UPDATE public.ddpe_bot_control c
+      SET buy_unknown = false, buy_unknown_order_uid = NULL,
+          in_flight_order_uid = NULL, reconciliation_requested = false,
+          desired_running = false, stop_requested = true,
+          worker_instance_id = NULL, worker_lease_expires_at = NULL,
+          last_error = NULL, updated_at = NOW()
+      FROM eligible e
+      WHERE c.owner_id = ${OWNER_ID} AND c.worker_epoch = e.worker_epoch
+        AND c.buy_unknown_order_uid = e.buy_unknown_order_uid
+        AND e.evidence_event_id IS NOT NULL
+      RETURNING c.worker_epoch, c.mode, e.buy_unknown_order_uid, e.evidence_event_id
+    )
+    INSERT INTO public.ddpe_bot_events
+      (event_uid, owner_id, worker_epoch, event_type, order_uid, mode, payload)
+    SELECT ${randomBytes(16).toString("hex")}, ${OWNER_ID}, worker_epoch,
+      'RECONCILED', buy_unknown_order_uid, mode,
+      ${JSON.stringify({ result: "operator_confirmed_no_purchase", reason, operatorConfirmed: true })}::jsonb
+    FROM resolved
+    RETURNING worker_epoch, order_uid`;
+    if (!rows.length) {
+      return json({ error: "No eligible no-purchase reconciliation exists. Wait at least 60 seconds after BUY_SENT, request reconciliation, and review Deriv's statement before confirming." }, 409);
+    }
+    return json({ ok: true, reconciled: true, result: "operator_confirmed_no_purchase", order_uid: rows[0].order_uid });
+  }
+
   if (method === "POST" && path === "/bot/reconcile") {
     assertSameOrigin(request);
     const sql = getSql();
