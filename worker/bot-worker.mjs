@@ -147,31 +147,15 @@ async function markBuyUnknown(orderUid, epoch, reason) {
     RETURNING worker_epoch`;
   if (rows.length) await fencedEvent(epoch, "BUY_UNKNOWN", orderUid, { reason: String(reason).slice(0, 300) });
 }
-async function settleOrder(orderUid, epoch, contractId, profit, status, dailyLossLimit) {
+async function settleOrder(orderUid, epoch, contractId, profit, status) {
   const pnl = Number(profit);
-  if (!Number.isFinite(pnl)) throw new Error("Deriv settlement profit is not numeric.");
-  const riskRows = await sql`INSERT INTO public.ddpe_daily_risk
-    (owner_id, trading_day, realized_net_pl, loss_limit, locked, lock_reason, worker_epoch, updated_at)
-    SELECT ${OWNER_ID}, CURRENT_DATE, ${pnl}, ${dailyLossLimit}, false, NULL, ${epoch}, NOW()
-    FROM public.ddpe_bot_control WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
-    ON CONFLICT (owner_id, trading_day) DO UPDATE SET
-      realized_net_pl = public.ddpe_daily_risk.realized_net_pl + EXCLUDED.realized_net_pl,
-      loss_limit = EXCLUDED.loss_limit,
-      locked = (public.ddpe_daily_risk.realized_net_pl + EXCLUDED.realized_net_pl) <= -EXCLUDED.loss_limit,
-      lock_reason = CASE WHEN (public.ddpe_daily_risk.realized_net_pl + EXCLUDED.realized_net_pl) <= -EXCLUDED.loss_limit THEN 'daily_loss_limit' ELSE NULL END,
-      worker_epoch = EXCLUDED.worker_epoch, updated_at = NOW()
-    WHERE EXCLUDED.worker_epoch = (SELECT worker_epoch FROM public.ddpe_bot_control WHERE owner_id = ${OWNER_ID})
-    RETURNING realized_net_pl`;
-  if (riskRows.length !== 1) throw new Error("Stale worker epoch while applying daily risk.");
-  await fencedEvent(epoch, "CONTRACT_SETTLED", orderUid, { profit: pnl, status }, contractId);
-  const rows = await sql`UPDATE public.ddpe_bot_control
-    SET consecutive_losses = CASE WHEN ${pnl} < 0 THEN consecutive_losses + 1 ELSE 0 END,
-        in_flight_order_uid = NULL, updated_at = NOW()
-    WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
-      AND in_flight_order_uid = ${orderUid} AND buy_unknown = false
-    RETURNING worker_epoch`;
-  if (rows.length !== 1) throw new Error("Stale epoch while releasing settled contract.");
-  await fencedEvent(epoch, "ORDER_RELEASED", orderUid, { reason: "settled" }, contractId);
+  if (!Number.isFinite(pnl) || !["won", "lost", "sold", "cancelled"].includes(status)) {
+    throw new Error("Deriv settlement response is incomplete.");
+  }
+  const rows = await sql`SELECT public.ddpe_apply_bot_settlement(
+    ${OWNER_ID}, ${epoch}, ${orderUid}, ${contractId}, ${pnl}, ${status}
+  ) AS applied`;
+  if (rows.length !== 1) throw new Error("Settlement transaction returned no result.");
 }
 async function monitorContract(socket, epoch, orderUid, contractId) {
   while (true) {
@@ -181,7 +165,7 @@ async function monitorContract(socket, epoch, orderUid, contractId) {
     const poc = result.proposal_open_contract;
     if (!poc) throw new Error("Deriv did not return proposal_open_contract data.");
     if (poc.is_expired === 1 || ["won", "lost", "sold", "cancelled"].includes(poc.status)) {
-      await settleOrder(orderUid, epoch, contractId, poc.profit, poc.status, Number(control.daily_loss_limit));
+      await settleOrder(orderUid, epoch, contractId, poc.profit, poc.status);
       return;
     }
     await heartbeat(epoch);
@@ -232,7 +216,7 @@ async function findConfirmedContract(socket, epoch, orderUid) {
     RETURNING worker_epoch`;
   if (rows.length !== 1) throw new Error("Could not clear reconciled BUY_UNKNOWN state.");
   if (poc.is_expired === 1 || ["won", "lost", "sold", "cancelled"].includes(poc.status)) {
-    await settleOrder(orderUid, epoch, contractId, poc.profit, poc.status, Number(control.daily_loss_limit));
+    await settleOrder(orderUid, epoch, contractId, poc.profit, poc.status);
   } else {
     await fencedEvent(epoch, "RECONCILED", orderUid, { contractId, result: "purchase_confirmed_contract_open" }, contractId);
     await monitorContract(socket, epoch, orderUid, contractId);
@@ -255,10 +239,21 @@ async function runOneCycle(socket, epoch, control, account) {
     ticks_history: control.symbol, adjust_start_time: 1, count: 500, end: "latest", style: "ticks",
   });
   const prices = history.history?.prices || [];
+  const times = history.history?.times || [];
   const pipSize = Number(history.pip_size);
-  if (prices.length < 100 || !Number.isInteger(pipSize) || pipSize < 0 || pipSize > 10) return;
+  if (prices.length < 101 || times.length !== prices.length || !Number.isInteger(pipSize) || pipSize < 0 || pipSize > 10) return;
+  const latestTickEpoch = Number(times.at(-1));
+  if (!Number.isSafeInteger(latestTickEpoch) || Math.floor(Date.now() / 1000) - latestTickEpoch > 15) return;
+  const claimed = await sql`UPDATE public.ddpe_bot_control
+    SET last_processed_tick_epoch = ${latestTickEpoch}, updated_at = NOW()
+    WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+      AND desired_running = true AND stop_requested = false
+      AND in_flight_order_uid IS NULL AND buy_unknown = false
+      AND last_processed_tick_epoch < ${latestTickEpoch}
+    RETURNING last_processed_tick_epoch`;
+  if (claimed.length !== 1) return;
   const digits = prices.map((price) => digitFromQuote(price, pipSize));
-  const barrier = leastFrequentDigit(digits.slice(-100));
+  const barrier = leastFrequentDigit(digits.slice(-101, -1));
   const orderUid = randomUUID();
   if (!(await reserveOrder(orderUid, epoch))) return;
   await fencedEvent(epoch, "ORDER_RESERVED", orderUid, { symbol: control.symbol, barrier });
