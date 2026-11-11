@@ -69,7 +69,11 @@ export async function writeBatchSegment(directory, ticks) {
 export async function readBatchSegment(filePath) {
   const raw = gunzipSync(await readFile(filePath)).toString("utf8");
   const ticks = raw.trimEnd().split("\n").map(line => JSON.parse(line));
-  return { ...canonicalBatch(ticks), path: filePath, alreadyArchived: true };
+  const batch = canonicalBatch(ticks);
+  if (path.basename(filePath) !== `batch-v1-${batch.batchId}.jsonl.gz`) {
+    throw new Error("Archive segment filename does not match its content fingerprint");
+  }
+  return { ...batch, path: filePath, alreadyArchived: true };
 }
 
 export async function listBatchSegments(directory) {
