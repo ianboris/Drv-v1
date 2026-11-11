@@ -74,8 +74,9 @@ function outcome(digit, strategy, target) {
 }
 
 export function parsePayoutSnapshots(raw) {
-  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  if (!Array.isArray(parsed)) throw new Error('Payout snapshot file must contain a JSON array.');
+  const input = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  const parsed = Array.isArray(input) ? input : input?.snapshots;
+  if (!Array.isArray(parsed)) throw new Error('Payout snapshot file must contain an array or an object with a snapshots array.');
   const map = new Map();
   for (const q of parsed) {
     const contractType = normalizeContractType(q.contractType ?? q.contract_type);
