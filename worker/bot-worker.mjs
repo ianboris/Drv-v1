@@ -195,7 +195,11 @@ async function findConfirmedContract(socket, epoch, orderUid) {
       contractTypeMatches && Number.isSafeInteger(Number(tx.contract_id));
   });
   if (candidates.length !== 1) {
-    throw new Error(`Deriv statement reconciliation is ambiguous (${candidates.length} matching buy rows); buy remains halted.`);
+    await fencedEvent(epoch, "RECONCILED", orderUid, {
+      source: "statement", result: candidates.length === 0 ? "no_matching_purchase_found" : "ambiguous_matching_purchases",
+      candidateCount: candidates.length, dateFrom: from, dateTo: to,
+    });
+    throw new Error(`Deriv statement reconciliation returned ${candidates.length} matching buy rows; the order remains halted for human review.`);
   }
   const contractId = Number(candidates[0].contract_id);
   await fencedEvent(epoch, "RECONCILED", orderUid, {
