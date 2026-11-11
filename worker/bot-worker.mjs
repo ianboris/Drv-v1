@@ -7,6 +7,7 @@ const OWNER_ID = "primary";
 const POLL_MS = 1000;
 const WS_TIMEOUT_MS = 12000;
 const CONTRACT_POLL_MS = 400;
+let lastHeartbeatAt = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function requiredEnv(name) {
@@ -118,11 +119,13 @@ async function fencedEvent(epoch, eventType, orderUid = null, payload = {}, cont
   if (rows.length !== 1) throw new Error("STALE_WORKER_EPOCH_EVENT_REJECTED");
 }
 async function heartbeat(epoch) {
+  if (Date.now() - lastHeartbeatAt < 10000) return;
   const rows = await sql`UPDATE public.ddpe_bot_control SET worker_heartbeat_at = NOW(), updated_at = NOW()
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
     RETURNING worker_epoch`;
   if (rows.length !== 1) throw new Error("STALE_WORKER_EPOCH");
   await fencedEvent(epoch, "HEARTBEAT");
+  lastHeartbeatAt = Date.now();
 }
 async function releaseOrder(orderUid, epoch) {
   await sql`UPDATE public.ddpe_bot_control SET in_flight_order_uid = NULL, updated_at = NOW()
@@ -338,7 +341,10 @@ async function runOneCycle(socket, epoch, control, account) {
     }, contractId);
     await monitorContract(socket, epoch, orderUid, contractId);
   } catch (error) {
-    if (!buySent) await releaseOrder(orderUid, epoch);
+    if (!buySent) {
+      try { await fencedEvent(epoch, "ORDER_RELEASED", orderUid, { reason: "pre_buy_failure", error: String(error.message || "").slice(0, 200) }); } catch {}
+      await releaseOrder(orderUid, epoch);
+    }
     throw error;
   }
 }
@@ -354,6 +360,7 @@ async function runWorker() {
       if (!control) throw new Error("Worker migration is not installed.");
       const epoch = Number(control.worker_epoch);
       if (activeEpoch !== epoch) {
+        lastHeartbeatAt = 0;
         socket?.close();
         socket = null;
         activeEpoch = epoch;
