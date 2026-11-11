@@ -168,6 +168,26 @@ function scoreForecastModel(digits, start, end, windowSize, model) {
   return { model, observations: count, meanLogLoss: count ? loss / count : null, meanBrierScore: count ? brier / count : null };
 }
 
+
+export function selectForecastModel(digits, windowSize, validationTicks = 50) {
+  assertDigits(digits);
+  if (!Number.isInteger(windowSize) || windowSize < 1) throw new Error('windowSize must be a positive integer.');
+  if (!Number.isInteger(validationTicks) || validationTicks < 20) throw new Error('validationTicks must be an integer of at least 20.');
+  const validationStart = digits.length - validationTicks;
+  if (validationStart < windowSize) return null;
+  const scores = MODELS.map(model => scoreForecastModel(digits, validationStart, digits.length, windowSize, model));
+  const selected = scores.filter(score => score.meanLogLoss !== null).sort((a, b) => a.meanLogLoss - b.meanLogLoss)[0];
+  if (!selected) return null;
+  const probabilities = forecastDigitProbabilities(digits.slice(-windowSize), windowSize, selected.model);
+  return {
+    model: selected.model,
+    probabilities,
+    validationObservations: selected.observations,
+    selectedMeanLogLoss: selected.meanLogLoss,
+    scores,
+  };
+}
+
 export function evaluateAdvancedModel(digits, symbol, payoutMap, { currency = 'USD', stakes = [1, 2, 3, 5], windows = [50, 100, 250, 500, 1000, 2500, 5000], maxQuoteAgeMs = 15 * 60 * 1000 } = {}) {
   assertDigits(digits);
   const normalizedCurrency = String(currency).toUpperCase();
