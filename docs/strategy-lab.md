@@ -61,3 +61,19 @@ The payout field is the **gross amount returned on a win, including stake**. The
 - $5 is not guaranteed to be accepted. Deriv contract minimums, maximums, account balance and account currency must be checked against the live proposal/account response.
 - No real-money orders are placed. This tool reads local archives and proposal snapshots only.
 - Archives may contain duplicates or gaps because the current collector does not yet have crash-safe archive manifests or complete gap repair. A result is only as reliable as its input archive.
+
+## Advanced model (USD)
+
+The report now includes a separate advanced-model evaluation alongside the original parameter grid. It compares three pre-defined digit-probability estimators:
+
+1. **Rolling Dirichlet** — rolling digit frequencies with Jeffreys smoothing.
+2. **Exponential decay** — recency-weighted digit frequencies with a fixed half-life of one quarter of the window (minimum 10 ticks).
+3. **Markov shrinkage** — first-order transition frequencies shrunk toward the rolling distribution with 20 pseudo-observations.
+
+The forecast model is selected by multiclass log loss on the validation segment. For each subsequent tick, the decision engine evaluates available Differs barriers 0–9, Matches barriers 0–9, Even and Odd using the captured USD proposal's gross payout and ask price. It chooses the available contract with the highest positive expected net return:
+
+**Expected net = estimated win probability × gross payout − ask price**
+
+No order is placed by this evaluator. A missing quote means that contract cannot be selected. The $5 benchmark and other stake sizes are evaluated separately. A $10 cumulative loss stops new simulated entries for that session.
+
+The validation segment is used for model/contract selection. The final 20% holdout is only reported after selection and is not used to rank results. The preliminary screen flag is not a statistical significance claim; a dependent-data block bootstrap, calibration checks and multiple-testing correction are still needed. Captured proposal payouts are current snapshots held constant over historical outcomes, so reported P/L is a hypothetical scenario, not historical realised P/L. The model has not been demonstrated profitable until it passes a sufficiently large, representative, gap-checked archive and independent holdout.
