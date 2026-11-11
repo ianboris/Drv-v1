@@ -437,12 +437,21 @@ async function handle(request) {
         (SELECT e.id FROM public.ddpe_bot_events e
           WHERE e.owner_id = c.owner_id AND e.order_uid = c.buy_unknown_order_uid
             AND e.event_type = 'RECONCILED'
-            AND e.payload->>'result' = 'no_matching_purchase_found'
-            AND e.created_at <= NOW() - INTERVAL '10 seconds'
           ORDER BY e.id DESC LIMIT 1) AS evidence_event_id
       FROM public.ddpe_bot_control c
       WHERE c.owner_id = ${OWNER_ID} AND c.buy_unknown = true
         AND (c.worker_lease_expires_at IS NULL OR c.worker_lease_expires_at <= NOW())
+        AND EXISTS (
+          SELECT 1 FROM public.ddpe_bot_events evidence
+          WHERE evidence.id = (
+            SELECT e.id FROM public.ddpe_bot_events e
+            WHERE e.owner_id = c.owner_id AND e.order_uid = c.buy_unknown_order_uid
+              AND e.event_type = 'RECONCILED'
+            ORDER BY e.id DESC LIMIT 1
+          )
+            AND evidence.payload->>'result' = 'no_matching_purchase_found'
+            AND evidence.created_at <= NOW() - INTERVAL '10 seconds'
+        )
         AND EXISTS (
           SELECT 1 FROM public.ddpe_bot_events sent
           WHERE sent.owner_id = c.owner_id AND sent.order_uid = c.buy_unknown_order_uid
