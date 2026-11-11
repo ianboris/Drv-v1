@@ -110,7 +110,7 @@ function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, pay
     symbol, strategy, windowSize, stake, startIndex: start, endIndex: end,
     signals, trades, wins, losses, skipped, quoteMissing,
     winRate: trades ? wins / trades : null,
-    ci95Lower: ci.lower, ci95Upper: ci.upper, theoreticalBaseline: baseline,
+    wilson95LowerDiagnostic: ci.lower, wilson95UpperDiagnostic: ci.upper, theoreticalBaseline: baseline,
     maxConsecutiveLosses: maxLossStreak, quoteCoverage,
     payoutAssumption: payoutComplete ? 'Captured proposal payouts held constant in historical replay; not historical realised P/L.' : null,
     currency: payoutComplete && currencies.size === 1 ? [...currencies][0] : payoutComplete ? 'MIXED_OR_UNSPECIFIED' : null,
@@ -122,7 +122,7 @@ function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, pay
     maxDrawdown: payoutComplete ? maxDrawdown : null,
     sessionStopHit: payoutComplete ? stopHit : null,
     tradesUntilStop: payoutComplete ? stopAt : null,
-    eligible: payoutComplete && ci.lower > maxBreakEven && scenarioNetPerTrade > 0,
+    preliminaryScreenPass: payoutComplete && ci.lower > maxBreakEven && scenarioNetPerTrade > 0,
   };
 }
 
@@ -142,11 +142,11 @@ export function evaluateSymbol(digits, symbol, payoutMap = null) {
   }
   // Ranking uses validation only. The final 20% holdout is never used to select.
   results.sort((a, b) => {
-    if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
+    if (a.preliminaryScreenPass !== b.preliminaryScreenPass) return a.preliminaryScreenPass ? -1 : 1;
     if (a.scenarioNetPerTrade != null && b.scenarioNetPerTrade != null) return b.scenarioNetPerTrade - a.scenarioNetPerTrade;
     if (a.scenarioNetPerTrade != null) return -1;
     if (b.scenarioNetPerTrade != null) return 1;
-    return (b.ci95Lower ?? -1) - (a.ci95Lower ?? -1);
+    return (b.wilson95LowerDiagnostic ?? -1) - (a.wilson95LowerDiagnostic ?? -1);
   });
   return {
     symbol, ticks: n, trainEnd, validationEnd,
