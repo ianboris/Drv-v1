@@ -50,12 +50,12 @@ To include proposal-based payout scenarios, supply a JSON array with one or more
 node scripts/lotus-strategy-lab.mjs --archive-dir /var/lib/lotus/research --payouts ./proposal-snapshots.json --out ./lotus-strategy-report.json
 ```
 
-The payout field is the **gross amount returned on a win, including stake**. Snapshots must be real Deriv proposal responses for the exact market, contract type, barrier, stake and account currency. The report applies that captured quote as a constant scenario to validation/holdout outcomes; it is not a reconstruction of historical payouts or realised P/L. Missing exact quote coverage is excluded from monetary EV.
+The payout field is the **gross amount returned on a win, including stake**. Snapshots must be real Deriv proposal responses for the exact market, contract type, barrier, stake and account currency. The report applies that captured quote as a constant scenario to validation/holdout outcomes; it is not a reconstruction of historical payouts or realised P/L. Missing exact quote coverage prevents monetary scenario reporting for that configuration.
 
 ## Interpretation and safety
 
-- Without matching proposal snapshots, the report is hit-rate research only. Monetary EV, P/L and eligibility remain unavailable.
-- With snapshots, a configuration is marked eligible only when its validation Wilson 95% lower win-rate bound exceeds break-even and projected validation EV is positive. This is a conservative screening gate, not proof of a durable edge.
+- Without matching proposal snapshots, the report is hit-rate research only. Monetary scenario P/L and preliminary screening remain unavailable.
+- With snapshots, a configuration receives a preliminary screen flag only when its validation Wilson lower-bound diagnostic exceeds the most conservative break-even threshold across the matched quotes and its replayed scenario P/L is positive. Wilson intervals assume independent Bernoulli outcomes; rolling-window trades can be serially dependent, so this flag is not a valid significance test or proof of a durable edge. A block-bootstrap and multiple-testing correction are still required before treating any candidate as statistically supported.
 - Use holdout once after choosing a candidate. Do not tune against holdout results.
 - The $10 stop-loss is simulated as a single continuous session in each scored split. It does not reset on an arbitrary UTC day.
 - $5 is not guaranteed to be accepted. Deriv contract minimums, maximums, account balance and account currency must be checked against the live proposal/account response.
