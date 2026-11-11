@@ -1,5 +1,5 @@
 import { neon } from "@neondatabase/serverless";
-import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
+import { appendFile, mkdir, readdir, unlink, statfs } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { randomUUID } from "node:crypto";
 import { digitFromQuote, normalizePipSize } from "../src/market-data.mjs";
@@ -10,6 +10,8 @@ const ARCHIVE_DIR = process.env.LOTUS_ARCHIVE_DIR || "/var/lib/lotus/research";
 const RETENTION_DAYS = Math.max(7, Number(process.env.LOTUS_ARCHIVE_RETENTION_DAYS || 90));
 const FLUSH_COUNT = 500;
 const MAX_QUEUE = 25000;
+const MAX_SYMBOLS = Math.min(20, Math.max(1, Number(process.env.LOTUS_RESEARCH_MAX_SYMBOLS || 10)));
+const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 const sql = neon(process.env.DATABASE_URL);
 const instance = randomUUID();
 let socket, reqId = 10, queue = [], symbols = new Map(), seen = new Map(), flushing = false;
@@ -39,7 +41,7 @@ function acceptTick(tick, source = "live") {
   if (queue.length >= MAX_QUEUE) throw new Error("Research archive queue reached its hard memory limit");
   queue.push({ symbol, epoch, quote, pip_size: precision, digit, tick_uid: uid, source });
   lastTickAt = Date.now(); totalTicks++;
-  if (queue.length >= FLUSH_COUNT) void flush();
+  if (queue.length >= FLUSH_COUNT) void flush().catch(error => console.error("[research] flush failed", error));
 }
 async function persistBatch(batch) {
   if (!batch.length) return;
@@ -50,6 +52,8 @@ async function persistBatch(batch) {
     byDay.get(day).push(JSON.stringify(tick));
   }
   await mkdir(ARCHIVE_DIR, { recursive: true, mode: 0o700 });
+  const disk = await statfs(ARCHIVE_DIR);
+  if (Number(disk.bavail) * Number(disk.bsize) < MIN_FREE_BYTES) throw new Error("Research archive paused: less than 2 GiB free disk space");
   for (const [day, lines] of byDay) {
     const path = `${ARCHIVE_DIR}/ticks-${day}.jsonl.gz`;
     // Each append is a complete gzip member; concatenated members remain a valid gzip stream.
@@ -126,7 +130,8 @@ async function connect() {
       const allowed = (msg.active_symbols || []).filter(item =>
         item.market === "synthetic_index" && item.underlying_symbol &&
         !/boom|crash/i.test(`${item.underlying_symbol} ${item.underlying_symbol_name || ""}`));
-      symbols = new Map(allowed.map(item => [item.underlying_symbol, { pipSize: normalizePipSize(item.pip_size) }]));
+      // Keep subscription load bounded; the cap is configurable and deliberately conservative.
+      symbols = new Map(allowed.slice(0, MAX_SYMBOLS).map(item => [item.underlying_symbol, { pipSize: normalizePipSize(item.pip_size) }]));
       for (const symbol of symbols.keys()) send({ ticks: symbol, subscribe: 1 });
       void writeHealth("CONNECTED");
     } else if (msg.msg_type === "tick" && msg.tick) {
