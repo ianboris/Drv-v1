@@ -28,5 +28,5 @@ test('all four contract families are evaluated and holdout is separate', () => {
 test('no payout snapshots means no monetary EV or profitability eligibility', () => {
   const digits = Array.from({ length: 12000 }, (_, i) => i % 10);
   const result = evaluateSymbol(digits, 'R_10');
-  assert.ok(result.results.every(row => row.projectedNetPnl === null && row.projectedEvPerTrade === null && row.eligible === false));
+  assert.ok(result.results.every(row => row.scenarioNetPnl === null && row.scenarioNetPerTrade === null && row.preliminaryScreenPass === false));
 });
