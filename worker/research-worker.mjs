@@ -15,7 +15,7 @@ const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 const sql = neon(process.env.DATABASE_URL);
 const instance = randomUUID();
 let socket, reqId = 10, queue = [], symbols = new Map(), seen = new Map(), flushing = false;
-let lastTickAt = null, totalTicks = 0, reconnects = 0, stopping = false, flushTimer, heartbeatTimer;
+let lastTickAt = null, totalTicks = 0, reconnects = 0, stopping = false, flushTimer, heartbeatTimer, healthTimer;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const utcDay = epoch => new Date(epoch * 1000).toISOString().slice(0, 10);
@@ -169,6 +169,7 @@ async function main() {
   await mkdir(ARCHIVE_DIR, { recursive: true, mode: 0o700 });
   await pruneArchives();
   flushTimer = setInterval(() => { flush().catch(error => console.error("[research] flush failed", error)); }, 5000);
+  healthTimer = setInterval(() => { writeHealth(socket?.readyState === WebSocket.OPEN ? "CONNECTED" : "DEGRADED").catch(error => console.error("[research] health write failed", error)); }, 15000);
   while (!stopping) {
     try {
       await writeHealth("CONNECTING");
@@ -191,6 +192,7 @@ async function main() {
     if (!stopping) await sleep(Math.min(30000, 1000 * 2 ** Math.min(reconnects, 5)));
   }
   clearInterval(flushTimer);
+  clearInterval(healthTimer);
   await flush();
   await writeHealth("STOPPED");
 }
