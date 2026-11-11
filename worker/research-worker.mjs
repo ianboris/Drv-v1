@@ -22,11 +22,16 @@ const utcDay = epoch => new Date(epoch * 1000).toISOString().slice(0, 10);
 
 let socket, reqId = 1, queue = [], symbols = new Map(), seen = new Set();
 let flushing = false, stopping = false, reconnects = 0, totalTicks = 0;
-let lastTickAt = null, heartbeatTimer, flushTimer, healthTimer;
+let lastTickAt = null, lastLiveTickAt = null, feedStartedAt = null;
+let heartbeatTimer, flushTimer, healthTimer, feedStatsTimer;
+const pendingSubscriptions = new Map(), firstLiveTickSymbols = new Set(), unexpectedTickSymbols = new Set();
+let liveTickCount = 0;
 
 function send(payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Deriv WebSocket is not open");
-  socket.send(JSON.stringify({...payload, req_id: payload.req_id ?? reqId++}));
+  const id = payload.req_id ?? reqId++;
+  socket.send(JSON.stringify({...payload, req_id: id}));
+  return id;
 }
 function acceptTick(tick, source = "live") {
   const symbol = String(tick?.symbol || "");
@@ -43,6 +48,14 @@ function acceptTick(tick, source = "live") {
   queue.push({symbol, epoch, quote: String(tick.quote), pip_size: precision,
     digit: digitFromQuote(quote, precision), tick_uid: tickUid, source});
   lastTickAt = Date.now();
+  if (source === "live") {
+    lastLiveTickAt = lastTickAt;
+    liveTickCount++;
+    if (!firstLiveTickSymbols.has(symbol)) {
+      firstLiveTickSymbols.add(symbol);
+      console.log(`[research] first live tick: ${symbol} quote=${tick.quote} epoch=${epoch}`);
+    }
+  }
   totalTicks++;
   if (queue.length >= FLUSH_COUNT) void flush().catch(error => console.error("[research] flush:", error.message));
 }
@@ -198,10 +211,20 @@ async function connect() {
     socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, {once:true});
     socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("Deriv WebSocket failed")); }, {once:true});
   });
+  feedStartedAt = Date.now();
+  lastLiveTickAt = null;
+  liveTickCount = 0;
+  firstLiveTickSymbols.clear();
+  pendingSubscriptions.clear();
   socket.addEventListener("message", event => {
     let message;
     try { message = JSON.parse(String(event.data)); } catch { return; }
-    if (message.error) { console.warn("[research] Deriv response error:", message.error.message); return; }
+    if (message.error) {
+      const symbol = pendingSubscriptions.get(Number(message.req_id));
+      console.warn(`[research] Deriv response error${symbol ? ` for ${symbol}` : ""} (req_id=${message.req_id}):`, message.error.message);
+      pendingSubscriptions.delete(Number(message.req_id));
+      return;
+    }
     if (message.msg_type === "active_symbols") {
       // Only collect open, unsuspended random indices. Deriv also labels
       // Boom/Crash instruments as synthetic_index, so market alone is not enough.
@@ -215,12 +238,27 @@ async function connect() {
       symbols = new Map(allowed.slice(0, MAX_SYMBOLS).map(item =>
         [item.underlying_symbol, {pipSize:normalizePipSize(item.pip_size)}]));
       console.log(`[research] eligible random indices: ${allowed.length}; subscribing to: ${[...symbols.keys()].join(", ")}`);
-      for (const symbol of symbols.keys()) send({ticks:symbol, subscribe:1});
+      for (const symbol of symbols.keys()) {
+        const id = send({ticks:symbol, subscribe:1});
+        pendingSubscriptions.set(id, symbol);
+      }
       void writeHealth("CONNECTED").catch(error => console.error("[research] health:", error.message));
     } else if (message.msg_type === "tick" && message.tick) {
-      if (symbols.has(String(message.tick.symbol || ""))) {
+      const symbol = String(message.tick.symbol || "");
+      if (symbols.has(symbol)) {
         try { acceptTick(message.tick); }
         catch (error) { console.error("[research] queue:", error.message); socket.close(); }
+      } else if (symbol && !unexpectedTickSymbols.has(symbol)) {
+        unexpectedTickSymbols.add(symbol);
+        console.warn(`[research] ignored tick for unselected symbol: ${symbol}`);
+      }
+    } else {
+      const symbol = pendingSubscriptions.get(Number(message.req_id));
+      if (symbol) {
+        console.log(`[research] subscription response for ${symbol}: msg_type=${message.msg_type || "unknown"} subscription_id=${message.subscription?.id || "not-provided"}`);
+        pendingSubscriptions.delete(Number(message.req_id));
+      } else if (message.msg_type) {
+        console.log(`[research] Deriv response: msg_type=${message.msg_type} req_id=${message.req_id ?? "none"}`);
       }
     }
   });
@@ -232,6 +270,10 @@ async function connect() {
   }
   if (symbols.size === 0) throw new Error("Deriv active_symbols returned no eligible synthetic indices within 15 seconds");
   heartbeatTimer = setInterval(() => { try { send({ping:1}); } catch {} }, 25000);
+  feedStatsTimer = setInterval(() => {
+    const age = lastLiveTickAt ? Math.round((Date.now() - lastLiveTickAt) / 1000) : null;
+    console.log(`[research] live-feed stats: ticks=${liveTickCount} symbols=${firstLiveTickSymbols.size}/${symbols.size} last_live_tick_age_s=${age ?? "none"} pending_subscriptions=${pendingSubscriptions.size}`);
+  }, 30000);
   for (const symbol of symbols.keys()) {
     if (stopping) break;
     try {
@@ -261,7 +303,8 @@ async function main() {
       while (!stopping && socket?.readyState === WebSocket.OPEN) {
         await sleep(1000);
         if (queue.length) await flush();
-        if (lastTickAt && Date.now()-lastTickAt > 90000) throw new Error("Market feed stale for 90 seconds");
+        const liveReference = lastLiveTickAt || feedStartedAt;
+        if (liveReference && Date.now()-liveReference > 90000) throw new Error("No live subscription ticks received for 90 seconds");
       }
     } catch (error) {
       reconnects++;
@@ -269,6 +312,7 @@ async function main() {
       await writeHealth("DEGRADED", error.message).catch(() => {});
     } finally {
       clearInterval(heartbeatTimer);
+      clearInterval(feedStatsTimer);
       try { socket?.close(); } catch {}
       socket = null;
     }
