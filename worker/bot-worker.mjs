@@ -117,15 +117,12 @@ async function fencedEvent(epoch, eventType, orderUid = null, payload = {}, cont
       ${contractId}, mode, ${JSON.stringify(payload)}::jsonb
     FROM public.ddpe_bot_control
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+      AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
     RETURNING event_uid`;
   if (rows.length !== 1) throw new Error("STALE_WORKER_EPOCH_EVENT_REJECTED");
 }
 async function heartbeat(epoch) {
   if (Date.now() - lastHeartbeatAt < 10000) return;
-  const rows = await sql`UPDATE public.ddpe_bot_control SET worker_heartbeat_at = NOW(), updated_at = NOW()
-    WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
-    RETURNING worker_epoch`;
-  if (rows.length !== 1) throw new Error("STALE_WORKER_EPOCH");
   await fencedEvent(epoch, "HEARTBEAT");
   lastHeartbeatAt = Date.now();
 }
