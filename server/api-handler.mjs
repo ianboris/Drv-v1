@@ -340,6 +340,14 @@ async function handle(request) {
   if (method === "POST" && path === "/deriv/demo/disconnect") {
     assertSameOrigin(request);
     const sql = getSql();
+    const workerInstalled = await sql`SELECT to_regclass('public.ddpe_bot_control') IS NOT NULL AS installed`;
+    if (workerInstalled[0]?.installed) {
+      const worker = await sql`SELECT desired_running, in_flight_order_uid, buy_unknown
+        FROM public.ddpe_bot_control WHERE owner_id = ${OWNER_ID} LIMIT 1`;
+      if (worker[0] && (worker[0].desired_running || worker[0].in_flight_order_uid || worker[0].buy_unknown)) {
+        return json({ error: "Stop the server worker and wait for every contract to settle or reconcile before disconnecting Deriv." }, 409);
+      }
+    }
     await sql`DELETE FROM public.ddpe_deriv_connections WHERE owner_id = ${OWNER_ID}`;
     await sql`DELETE FROM public.ddpe_deriv_oauth_states`;
     return json({ ok: true, connected: false });
