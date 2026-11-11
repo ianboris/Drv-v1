@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test:api": "node --test tests/*.test.mjs",
     "research": "node worker/research-worker.mjs",
-    "test:research": "node --test tests/research-market-data.test.mjs"
+    "test:research": "node --test tests/research-market-data.test.mjs",
+    "test:strategy-lab": "node --test tests/strategy-lab.test.mjs",
+    "strategy:lab": "node scripts/lotus-strategy-lab.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
