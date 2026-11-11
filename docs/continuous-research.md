@@ -9,7 +9,7 @@ This is a separate, unauthenticated public-market-data daemon. It is independent
 - Appends are complete gzip members; concatenated gzip members form one valid gzip stream and can be read by standard gzip tools.
 - Raw ticks are written in batches (500 or five seconds), not one DB insert per tick.
 - Neon stores per-day/per-symbol tick counts and ten digit counts, plus worker health. It does not store every raw tick.
-- In-memory queue is capped at 25,000 ticks; batches are drained to disk and compact aggregates.
+- In-memory queue is capped at 25,000 ticks; batches are drained to disk and compact aggregates. The worker subscribes to at most 10 symbols by default (`LOTUS_RESEARCH_MAX_SYMBOLS`, hard-capped at 20) to avoid exhausting Deriv subscription capacity. It pauses collection if free disk space falls below 2 GiB.
 - Local archive retention defaults to 90 days (minimum 7). This is a bounded local disk policy, not off-site backup. Before enabling deletion, configure and verify an OCI Object Storage backup if archives must be retained longer.
 
 ## Install on OCI
