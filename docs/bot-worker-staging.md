@@ -98,3 +98,48 @@ it against Deriv until the unit tests and staging migration/trigger tests pass.
 The 10-order cap, server-side risk checks, and event journal are intended for
 plumbing validation only; they are not evidence of strategy profitability or
 production readiness.
+
+
+## OCI process supervision (after the staging gates pass)
+
+The worker must run as a persistent process on the OCI VM; do not run it
+inside Vercel Functions and do not rely on an open browser tab. The supplied
+systemd unit is `worker/lotus-worker.service`. Install the repository under
+`/opt/lotus`, install production dependencies, and create a dedicated
+unprivileged `lotus` Linux user.
+
+Create `/etc/lotus/worker.env` as root with mode 0600. It must contain the
+staging-only values below; do not put secrets in Vite variables, the repository,
+or the browser:
+
+- `BOT_ENVIRONMENT=staging`
+- `BOT_MODE=plumbing_test`
+- `DATABASE_URL` — isolated Neon staging branch only
+- `DERIV_TOKEN_ENCRYPTION_KEY` — same server-side encryption key used by the OAuth API
+
+Install and enable the unit:
+
+```sh
+sudo install -d -o root -g root -m 0750 /etc/lotus
+sudo chown -R lotus:lotus /opt/lotus
+sudo chmod 0600 /etc/lotus/worker.env
+sudo install -o root -g root -m 0644 /opt/lotus/worker/lotus-worker.service /etc/systemd/system/lotus-worker.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now lotus-worker
+sudo systemctl status lotus-worker
+sudo journalctl -u lotus-worker -f
+```
+
+The unit restarts a crashed process and starts it after VM reboot. This is
+process supervision, not proof that Deriv connectivity, tick ingestion, or
+trading is healthy; health/heartbeat alerts and end-to-end restart tests are
+still required. A process restart must never replay an uncertain buy.
+
+### Deriv OAuth lifetime limitation
+
+Deriv OAuth 2.0 does **not** issue refresh tokens. Access-token expiry therefore
+cannot be silently refreshed by Lotus. The account owner must complete the
+OAuth authorization flow again when Deriv expires/revokes the token (Deriv
+documents reauthorization as the renewal path). The worker must fail closed,
+persist the authentication error, and notify the dashboard/operator rather
+than attempting an unsupported refresh grant.
