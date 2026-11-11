@@ -1,13 +1,15 @@
 import { neon } from "@neondatabase/serverless";
 import { createDecipheriv, randomUUID } from "node:crypto";
 import { assertRiskAllowed, digitFromQuote, leastFrequentDigit } from "./risk.mjs";
-import { reserveOrder } from "./control.mjs";
+import { claimWorkerLease, releaseWorkerLease, reserveOrder } from "./control.mjs";
 
 const OWNER_ID = "primary";
 const POLL_MS = 1000;
 const WS_TIMEOUT_MS = 12000;
 const CONTRACT_POLL_MS = 400;
+const INSTANCE_ID = randomUUID();
 let lastHeartbeatAt = 0;
+let lastLeaseRenewAt = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function requiredEnv(name) {
@@ -110,8 +112,8 @@ async function openDemoSocket(epoch, expectedAccountId) {
 }
 async function fencedEvent(epoch, eventType, orderUid = null, payload = {}, contractId = null) {
   const rows = await sql`INSERT INTO public.ddpe_bot_events
-    (event_uid, owner_id, worker_epoch, event_type, order_uid, deriv_contract_id, mode, payload)
-    SELECT ${randomUUID()}, ${OWNER_ID}, ${epoch}, ${eventType}, ${orderUid},
+    (event_uid, owner_id, worker_epoch, worker_instance_id, event_type, order_uid, deriv_contract_id, mode, payload)
+    SELECT ${randomUUID()}, ${OWNER_ID}, ${epoch}, ${INSTANCE_ID}, ${eventType}, ${orderUid},
       ${contractId}, mode, ${JSON.stringify(payload)}::jsonb
     FROM public.ddpe_bot_control
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
@@ -130,6 +132,7 @@ async function heartbeat(epoch) {
 async function releaseOrder(orderUid, epoch) {
   await sql`UPDATE public.ddpe_bot_control SET in_flight_order_uid = NULL, updated_at = NOW()
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+      AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
       AND in_flight_order_uid = ${orderUid} AND buy_unknown = false`;
 }
 async function markBuyUnknown(orderUid, epoch, reason) {
@@ -138,6 +141,7 @@ async function markBuyUnknown(orderUid, epoch, reason) {
         last_error = ${String(reason).slice(0, 500)}, desired_running = false,
         stop_requested = true, reconciliation_requested = false, updated_at = NOW()
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+      AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
       AND in_flight_order_uid = ${orderUid}
     RETURNING worker_epoch`;
   if (rows.length) await fencedEvent(epoch, "BUY_UNKNOWN", orderUid, { reason: String(reason).slice(0, 300) });
@@ -148,14 +152,15 @@ async function settleOrder(orderUid, epoch, contractId, profit, status) {
     throw new Error("Deriv settlement response is incomplete.");
   }
   const rows = await sql`SELECT public.ddpe_apply_bot_settlement(
-    ${OWNER_ID}, ${epoch}, ${orderUid}, ${contractId}, ${pnl}, ${status}
+    ${OWNER_ID}, ${epoch}, ${INSTANCE_ID}, ${orderUid}, ${contractId}, ${pnl}, ${status}
   ) AS applied`;
   if (rows.length !== 1) throw new Error("Settlement transaction returned no result.");
 }
 async function monitorContract(socket, epoch, orderUid, contractId) {
   while (true) {
+    if (!(await ensureLease(epoch))) throw new Error("STALE_WORKER_LEASE");
     const control = await loadControl();
-    if (!control || Number(control.worker_epoch) !== epoch) throw new Error("STALE_WORKER_EPOCH");
+    if (!control || Number(control.worker_epoch) !== epoch || control.worker_instance_id !== INSTANCE_ID) throw new Error("STALE_WORKER_EPOCH_OR_LEASE");
     const result = await socket.request({ proposal_open_contract: 1, contract_id: contractId });
     const poc = result.proposal_open_contract;
     if (!poc) throw new Error("Deriv did not return proposal_open_contract data.");
@@ -209,6 +214,7 @@ async function findConfirmedContract(socket, epoch, orderUid) {
     SET buy_unknown = false, buy_unknown_order_uid = NULL, reconciliation_requested = false,
         stop_requested = true, desired_running = false, last_error = NULL, updated_at = NOW()
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+      AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
       AND buy_unknown = true AND buy_unknown_order_uid = ${orderUid}
     RETURNING worker_epoch`;
   if (rows.length !== 1) throw new Error("Could not clear reconciled BUY_UNKNOWN state.");
@@ -256,6 +262,7 @@ async function runOneCycle(socket, epoch, control, account) {
   const claimed = await sql`UPDATE public.ddpe_bot_control
     SET last_processed_tick_epoch = ${latestTickEpoch}, updated_at = NOW()
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+      AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
       AND desired_running = true AND stop_requested = false
       AND in_flight_order_uid IS NULL AND buy_unknown = false
       AND last_processed_tick_epoch < ${latestTickEpoch}
@@ -264,7 +271,7 @@ async function runOneCycle(socket, epoch, control, account) {
   const digits = prices.map((price) => digitFromQuote(price, pipSize));
   const barrier = leastFrequentDigit(digits.slice(-101, -1));
   const orderUid = randomUUID();
-  if (!(await reserveOrder(orderUid, epoch))) return;
+  if (!(await reserveOrder(sql, orderUid, epoch, INSTANCE_ID))) return;
   await fencedEvent(epoch, "ORDER_RESERVED", orderUid, { symbol: control.symbol, barrier });
   let buySent = false;
   try {
@@ -299,10 +306,11 @@ async function runOneCycle(socket, epoch, control, account) {
       proposalId: quote.id, askPrice: quote.ask_price, payout: quote.payout,
       grossPayout: quote.payout, stake, barrier, symbol: control.symbol,
     });
-    if (!(await reserveOrder(orderUid, epoch))) throw new Error("STOP_OR_FENCE_BLOCKED_BUY");
+    if (!(await reserveOrder(sql, orderUid, epoch, INSTANCE_ID))) throw new Error("STOP_OR_FENCE_BLOCKED_BUY");
     const cap = await sql`UPDATE public.ddpe_bot_control
       SET plumbing_remaining = plumbing_remaining - 1, updated_at = NOW()
       WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+        AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
         AND in_flight_order_uid = ${orderUid} AND stop_requested = false
         AND buy_unknown = false AND mode = 'PLUMBING_TEST' AND plumbing_remaining > 0
       RETURNING plumbing_remaining`;
@@ -359,39 +367,47 @@ async function runWorker() {
       const control = await loadControl();
       if (!control) throw new Error("Worker migration is not installed.");
       const epoch = Number(control.worker_epoch);
-      if (activeEpoch !== epoch) {
-        lastHeartbeatAt = 0;
+      const shouldWork =
+        (control.desired_running && !control.stop_requested) ||
+        (Boolean(control.in_flight_order_uid) && !control.buy_unknown) ||
+        (control.buy_unknown && control.reconciliation_requested);
+      if (!shouldWork) {
+        if (activeEpoch !== null) {
+          await releaseWorkerLease(sql, activeEpoch, INSTANCE_ID);
+          socket?.close(); socket = null; activeEpoch = null; lastLeaseRenewAt = 0;
+        }
+        await sleep(POLL_MS);
+        continue;
+      }
+      const leaseAcquired = await ensureLease(epoch, activeEpoch !== epoch);
+      if (!leaseAcquired) {
+        socket?.close(); socket = null; activeEpoch = null; lastLeaseRenewAt = 0;
+        await sleep(POLL_MS);
+        continue;
+      }
+      if (activeEpoch !== epoch || !socket) {
         socket?.close();
-        socket = null;
+        socket = (await openDemoSocket(epoch, control.demo_account_id)).socket;
         activeEpoch = epoch;
+        lastHeartbeatAt = 0;
       }
       if (control.buy_unknown) {
-        if (control.reconciliation_requested) {
-          if (!socket) socket = (await openDemoSocket(epoch, control.demo_account_id)).socket;
-          try {
-            await findConfirmedContract(socket, epoch, control.buy_unknown_order_uid);
-          } catch (error) {
-            await sql`UPDATE public.ddpe_bot_control
-              SET reconciliation_requested = false, updated_at = NOW()
-              WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
-                AND buy_unknown = true AND buy_unknown_order_uid = ${control.buy_unknown_order_uid}`;
-            throw error;
-          }
-        } else {
-          await sleep(POLL_MS);
+        try {
+          await findConfirmedContract(socket, epoch, control.buy_unknown_order_uid);
+        } catch (error) {
+          await sql`UPDATE public.ddpe_bot_control
+            SET reconciliation_requested = false, updated_at = NOW()
+            WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+              AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
+              AND buy_unknown = true AND buy_unknown_order_uid = ${control.buy_unknown_order_uid}`;
+          throw error;
         }
         continue;
       }
       if (control.in_flight_order_uid) {
-        if (!socket) socket = (await openDemoSocket(epoch, control.demo_account_id)).socket;
         await recoverOpenOrder(socket, epoch, control.in_flight_order_uid);
         continue;
       }
-      if (!control.desired_running || control.stop_requested) {
-        await sleep(POLL_MS);
-        continue;
-      }
-      if (!socket) socket = (await openDemoSocket(epoch, control.demo_account_id)).socket;
       await heartbeat(epoch);
       const { token } = await getCredentials();
       const accountBody = await restJson("https://api.derivws.com/trading/v1/options/accounts", token);
@@ -409,11 +425,12 @@ async function runWorker() {
           await sql`UPDATE public.ddpe_bot_control
             SET last_error = ${message.slice(0, 500)}, desired_running = false,
                 stop_requested = true, updated_at = NOW()
-            WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${activeEpoch}`;
+            WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${activeEpoch}
+              AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()`;
           await fencedEvent(activeEpoch, "WORKER_ERROR", null, { error: message.slice(0, 300) });
         } catch {}
       }
-      socket?.close(); socket = null;
+      socket?.close(); socket = null; activeEpoch = null; lastLeaseRenewAt = 0;
       await sleep(POLL_MS);
     }
   }
