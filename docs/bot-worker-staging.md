@@ -70,11 +70,17 @@ an order or unknown buy remains unresolved.
 - The database trigger rejects stale-epoch event inserts and all UPDATE/DELETE
   attempts on the event journal.
 
-## Important implementation limitation in this PR
+## Verification boundary
 
-The worker contains the demo-only bootstrap, risk gates, proposal/buy request
-path, and fail-closed unknown-buy handling. Contract settlement recovery and
-the human reconciliation operation are not yet enabled for unattended use.
-Until those paths are completed and the staging test sequence passes, do not
-run the process against Deriv. This PR is a reviewable implementation
-foundation, not evidence of live or unattended operation.
+The worker polls Deriv tick history once per control cycle and deduplicates by
+latest tick epoch. It requests one-tick DIGITDIFF proposals only in the capped
+plumbing mode. It monitors confirmed contracts through settlement, including
+after a process restart, and exposes an operator-triggered reconciliation path
+for an unknown buy. A unique statement match is required; ambiguous or absent
+matches leave the durable halt and order slot intact.
+
+This implementation has not yet been run against Deriv or Oracle. Do not run
+it against Deriv until the unit tests and staging migration/trigger tests pass.
+The 10-order cap, server-side risk checks, and event journal are intended for
+plumbing validation only; they are not evidence of strategy profitability or
+production readiness.
