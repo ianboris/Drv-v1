@@ -6,6 +6,12 @@ export const STAKES = [1, 2, 3, 5];
 export const WINDOWS = [50, 100, 250, 500, 1000, 2500, 5000];
 export const STRATEGIES = ['DIFFERS', 'MATCHES', 'EVEN', 'ODD'];
 export const SESSION_STOP_LOSS = 10;
+
+function normalizeContractType(value) {
+  const aliases = { DIGITDIFF: 'DIFFERS', DIGITMATCH: 'MATCHES', DIGITEVEN: 'EVEN', DIGITODD: 'ODD' };
+  const normalized = String(value || '').toUpperCase();
+  return aliases[normalized] || (STRATEGIES.includes(normalized) ? normalized : null);
+}
 const MIN_PARITY_EDGE = 0.55;
 
 export function wilsonInterval(wins, total, z = 1.96) {
@@ -50,16 +56,19 @@ export function parsePayoutSnapshots(raw) {
   if (!Array.isArray(parsed)) throw new Error('Payout snapshot file must contain a JSON array.');
   const map = new Map();
   for (const q of parsed) {
-    const stake = Number(q.stake), payout = Number(q.payout), askPrice = Number(q.askPrice);
-    if (!q.symbol || !STRATEGIES.includes(q.contractType) || !Number.isFinite(stake) || stake <= 0 ||
+    const contractType = normalizeContractType(q.contractType ?? q.contract_type);
+    const symbol = q.symbol ?? q.underlying_symbol;
+    const askPrice = Number(q.askPrice ?? q.ask_price);
+    const stake = Number(q.stake ?? q.amount ?? askPrice), payout = Number(q.payout);
+    if (!symbol || !contractType || !Number.isFinite(stake) || stake <= 0 ||
         !Number.isFinite(payout) || payout <= stake || !Number.isFinite(askPrice) || askPrice <= 0) continue;
     if (Math.abs(askPrice - stake) > Math.max(0.01, stake * 0.02)) continue;
     const barrier = q.barrier == null ? '-' : String(q.barrier);
-    const key = [q.symbol, q.contractType, barrier, stake].join('|');
+    const key = [symbol, contractType, barrier, stake].join('|');
     const capturedAt = Date.parse(q.capturedAt || '');
     const previous = map.get(key);
     if (!previous || (Number.isFinite(capturedAt) && capturedAt > previous.capturedAtMs)) {
-      map.set(key, { ...q, stake, payout, askPrice, capturedAtMs: Number.isFinite(capturedAt) ? capturedAt : 0 });
+      map.set(key, { ...q, symbol, contractType, stake, payout, askPrice, capturedAtMs: Number.isFinite(capturedAt) ? capturedAt : 0 });
     }
   }
   return map;
