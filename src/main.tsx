@@ -95,7 +95,7 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
 // from running again on every live tick while still invalidating when the market history changes.
 const walkForwardEvidenceCache = new Map<string, { sampleId: string; result: WalkForwardBacktestResult }>();
 function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: 'DIFFERS' | 'MATCHES', windowSize: number): WalkForwardBacktestResult | null {
-  const historyTicks = ticks.filter(tick => tick.source === 'history').slice(-5000);
+  const historyTicks = ticks.filter(tick => tick.source === 'history').slice(-5500);
   const sampleId = historyTicks.length ? historyTicks[historyTicks.length - 1].id : '';
   const cacheKey = `${marketSymbol}:${strategy}:${windowSize}`;
   const cached = walkForwardEvidenceCache.get(cacheKey);
