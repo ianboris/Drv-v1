@@ -239,6 +239,18 @@ async function recoverOpenOrder(socket, epoch, orderUid) {
       AND order_uid = ${orderUid} AND event_type = 'BUY_SENT'
     ORDER BY id DESC LIMIT 1`;
   if (sent.length) {
+    const rejected = await sql`SELECT event_uid FROM public.ddpe_bot_events
+      WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+        AND order_uid = ${orderUid} AND event_type = 'WORKER_ERROR'
+        AND payload->>'kind' = 'BUY_REJECTED' ORDER BY id DESC LIMIT 1`;
+    const released = await sql`SELECT event_uid FROM public.ddpe_bot_events
+      WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+        AND order_uid = ${orderUid} AND event_type = 'ORDER_RELEASED'
+        AND payload->>'reason' = 'pre_buy_failure' ORDER BY id DESC LIMIT 1`;
+    if (rejected.length || released.length) {
+      await releaseOrder(orderUid, epoch);
+      return;
+    }
     await markBuyUnknown(orderUid, epoch, "Worker restarted after BUY_SENT but before a confirmed buy response.");
     return;
   }
@@ -325,16 +337,26 @@ async function runOneCycle(socket, epoch, control, account) {
       grossPayout: quote.payout, requestedStake: stake, maxBuyPrice, barrier, symbol: control.symbol,
     });
     if (!(await reserveOrder(sql, orderUid, epoch, INSTANCE_ID))) throw new Error("STOP_OR_FENCE_BLOCKED_BUY");
-    const cap = await sql`UPDATE public.ddpe_bot_control
+    await fencedEvent(epoch, "BUY_AUTHORIZED", orderUid, { requestedStake: stake, maxBuyPrice, barrier });
+    // Final stop/epoch/instance/lease check, plumbing-cap decrement, and BUY_SENT
+    // journal append happen in one database statement immediately before send.
+    const sentEvent = await sql`WITH authorized AS (
+      UPDATE public.ddpe_bot_control
       SET plumbing_remaining = plumbing_remaining - 1, updated_at = NOW()
       WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
         AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
         AND in_flight_order_uid = ${orderUid} AND stop_requested = false
         AND buy_unknown = false AND mode = 'PLUMBING_TEST' AND plumbing_remaining > 0
-      RETURNING plumbing_remaining`;
-    if (cap.length !== 1) throw new Error("PLUMBING_TRADE_CAP_REACHED_OR_STOPPED");
-    await fencedEvent(epoch, "BUY_AUTHORIZED", orderUid, { requestedStake: stake, maxBuyPrice, barrier });
-    await fencedEvent(epoch, "BUY_SENT", orderUid, { proposalId: quote.id, stake: maxBuyPrice, requestedStake: stake, symbol: control.symbol, barrier });
+      RETURNING mode
+    )
+    INSERT INTO public.ddpe_bot_events
+      (event_uid, owner_id, worker_epoch, worker_instance_id, event_type, order_uid, mode, payload)
+    SELECT ${randomUUID()}, ${OWNER_ID}, ${epoch}, ${INSTANCE_ID}, 'BUY_SENT', ${orderUid},
+      authorized.mode,
+      ${JSON.stringify({ proposalId: quote.id, stake: maxBuyPrice, requestedStake: stake, symbol: control.symbol, barrier })}::jsonb
+    FROM authorized
+    RETURNING event_uid`;
+    if (sentEvent.length !== 1) throw new Error("BUY_BLOCKED_BY_STOP_EPOCH_LEASE_OR_PLUMBING_CAP");
     buySent = true;
     let bought;
     try {
