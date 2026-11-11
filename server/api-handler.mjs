@@ -441,6 +441,8 @@ async function handle(request) {
       FROM public.ddpe_bot_control c
       WHERE c.owner_id = ${OWNER_ID} AND c.buy_unknown = true
         AND (c.worker_lease_expires_at IS NULL OR c.worker_lease_expires_at <= NOW())
+        AND c.stop_requested = true AND c.desired_running = false
+        AND c.reconciliation_requested = false
         AND EXISTS (
           SELECT 1 FROM public.ddpe_bot_events evidence
           WHERE evidence.id = (
@@ -468,6 +470,7 @@ async function handle(request) {
       FROM eligible e
       WHERE c.owner_id = ${OWNER_ID} AND c.worker_epoch = e.worker_epoch
         AND c.buy_unknown_order_uid = e.buy_unknown_order_uid
+        AND c.in_flight_order_uid = e.buy_unknown_order_uid
         AND e.evidence_event_id IS NOT NULL
       RETURNING c.worker_epoch, c.mode, e.buy_unknown_order_uid, e.evidence_event_id
     )
