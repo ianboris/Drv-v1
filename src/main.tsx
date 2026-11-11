@@ -787,6 +787,10 @@ function App() {
       const pending = demoOrderRequestsRef.current.get(reqId);
       if (!pending || pending.kind !== kind) return;
       demoOrderRequestsRef.current.delete(reqId);
+      if (pending.proposalSubscriptionId) {
+        const socket = demoWs.current;
+        if (socket?.readyState === WebSocket.OPEN) { try { socket.send(JSON.stringify({ forget: pending.proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {} }
+      }
       if (kind === 'buy') {
         // A timed-out buy may have reached Deriv even if its acknowledgement did not reach us.
         // Pause rather than retry: the user must inspect Deriv's demo contract history first.
