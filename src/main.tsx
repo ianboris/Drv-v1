@@ -4,6 +4,7 @@ import './style.css';
 import { calculateContractEconomics } from './riskCalculator';
 import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
 import { digitFromQuote, normalizePipSize } from './market-data.mjs';
+import { selectForecastModel } from './advanced-model.mjs';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -370,7 +371,7 @@ function App() {
             const precision = pipSizesBySymbolRef.current.get(historySymbol);
             const merged = new Map<string, Tick>();
             [...history, ...(ticksBySymbolRef.current.get(historySymbol) || [])].forEach((tick) => merged.set(tick.id, tick));
-            let nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
+            let nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5500);
             if (precision !== undefined) {
               nextTicks = nextTicks.map((tick) => tick.pipSize === undefined
                 ? { ...tick, pipSize: precision, lastDigit: digitFromQuote(tick.quote, precision) }
@@ -511,7 +512,7 @@ function App() {
                 const appendedTicks = !lastTick || tick.epoch >= lastTick.epoch
                   ? [...currentTicks, tick]
                   : [...currentTicks, tick].sort((a, b) => a.epoch - b.epoch);
-                const nextTicks = appendedTicks.slice(-5000);
+                const nextTicks = appendedTicks.slice(-5500);
                 if (seenTickIds.size > 6000) tickIdsBySymbolRef.current.set(marketSymbol, new Set(nextTicks.map(item => item.id)));
                 ticksBySymbolRef.current.set(marketSymbol, nextTicks);
                 if (marketSymbol === selectedSymbolRef.current) {
@@ -688,6 +689,11 @@ function App() {
   const rollingDigits = digits.slice(-settings.windowSize);
   const stats = useMemo(() => getStats(rollingDigits), [rollingDigits]);
   const overallStats = useMemo(() => getStats(digits), [digits]);
+  const advancedForecast = useMemo(() => {
+    const validationTicks = Math.min(50, Math.floor(digits.length * 0.1));
+    if (validationTicks < 20 || digits.length < settings.windowSize + validationTicks) return null;
+    return selectForecastModel(digits, settings.windowSize, validationTicks);
+  }, [digits, settings.windowSize]);
   const marketName = symbols.find((item) => item.underlying_symbol === symbol)?.underlying_symbol_name || symbol;
   const scannerRows = useMemo(() => symbols.map((item) => {
     const history = choiceAggregates.filter((choice) => choice.symbol === item.underlying_symbol);
@@ -1174,7 +1180,7 @@ function App() {
     if (!marketSymbol || !socket || socket.readyState !== WebSocket.OPEN) return;
     // One selected-market stream avoids exhausting Deriv's subscription capacity.
     socket.send(JSON.stringify({ forget_all: 'ticks' }));
-    socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 5000, end: 'latest', style: 'ticks', req_id: 1000 }));
+    socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 5500, end: 'latest', style: 'ticks', req_id: 1000 }));
     socket.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 }));
   }
 
@@ -1309,6 +1315,19 @@ function App() {
           <button className="stop-button" onClick={() => setAnalysisRunning(false)} disabled={!analysisRunning}>STOP ANALYSIS</button>
         </div>
         <small className="lock-note">{analysisRunning ? activeStrategy + ' paper research running' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
+      </section>
+      <section className="panel advanced-model-panel">
+        <div className="panel-title"><div><div className="section-heading">ADVANCED DIGIT MODEL · LIVE RESEARCH</div><p className="muted">The model compares three probability estimators on the latest chronological validation slice. It does not place orders.</p></div><span className="live-dot">MODEL ADVISORY</span></div>
+        {advancedForecast ? <>
+          <div className="candidate-row"><span>Selected forecast model</span><strong>{advancedForecast.model.replaceAll('_', ' ').toUpperCase()}</strong></div>
+          <div className="candidate-row"><span>Recent validation log loss · lower is better</span><strong>{advancedForecast.selectedMeanLogLoss.toFixed(4)} · {advancedForecast.validationObservations} outcomes</strong></div>
+          <div className="candidate-row"><span>Lowest-probability digit · Differs candidate</span><strong>{advancedForecast.probabilities.indexOf(Math.min(...advancedForecast.probabilities))}</strong></div>
+          <div className="candidate-row"><span>Highest-probability digit · Matches candidate</span><strong>{advancedForecast.probabilities.indexOf(Math.max(...advancedForecast.probabilities))}</strong></div>
+          <div className="candidate-row"><span>Even / Odd estimated probabilities</span><strong>{(advancedForecast.probabilities.filter((_, digit) => digit % 2 === 0).reduce((sum, p) => sum + p, 0) * 100).toFixed(2)}% / {(advancedForecast.probabilities.filter((_, digit) => digit % 2 === 1).reduce((sum, p) => sum + p, 0) * 100).toFixed(2)}%</strong></div>
+          <div className="digits advanced-digit-probabilities">{advancedForecast.probabilities.map((probability, digit) => <span key={digit} title={'Estimated probability for digit ' + digit}>{digit}<small>{(probability * 100).toFixed(1)}%</small></span>)}</div>
+          <div className="table-wrap"><table><thead><tr><th>Forecast candidate</th><th>Validation log loss</th><th>Brier score</th></tr></thead><tbody>{advancedForecast.scores.map(score => <tr key={score.model}><td>{score.model.replaceAll('_', ' ')}</td><td>{score.meanLogLoss?.toFixed(4) ?? '—'}</td><td>{score.meanBrierScore?.toFixed(4) ?? '—'}</td></tr>)}</tbody></table></div>
+        </> : <p className="muted">Collect at least {settings.windowSize + 20} ticks to compare the models for this analysis window.</p>}
+        <small className="muted">These are model-estimated next-digit probabilities, not calibrated guarantees. A low log-loss model on a short recent slice is not proof of positive trading expectancy. The demo execution path remains separately gated by walk-forward evidence and fresh payout quotes.</small>
       </section>
       <section className="panel demo-execution-panel">
         <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick DIFFERS demo contracts only. MATCHES remains research-only until it demonstrates a reliable out-of-sample edge. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
