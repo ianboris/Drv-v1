@@ -34,7 +34,7 @@ function chooseByFrequency(counts, lastSeen, mode, windowStart) {
   return chosen;
 }
 
-function buildSignals(digits, windowSize, strategy) {
+export function buildSignals(digits, windowSize, strategy) {
   const signals = Array(digits.length).fill(null);
   if (digits.length <= windowSize) return signals;
   const counts = Array(10).fill(0);
