@@ -22,5 +22,5 @@ await mkdir(resolve(outPath, '..'), { recursive: true });
 await writeFile(outPath, JSON.stringify(report, null, 2));
 console.log(JSON.stringify({
   output: outPath,
-  markets: report.markets.map(m => ({ symbol: m.symbol, ticks: m.ticks, configsTested: m.results.length, top: m.results.slice(0, 3).map(r => ({ strategy: r.strategy, stake: r.stake, window: r.windowSize, validationTrades: r.trades, validationWinRate: r.winRate, holdoutWinRate: r.holdout.winRate, projectedEvPerTrade: r.projectedEvPerTrade, eligible: r.eligible })) }))
+  markets: report.markets.map(m => ({ symbol: m.symbol, ticks: m.ticks, configsTested: m.results.length, top: m.results.slice(0, 3).map(r => ({ strategy: r.strategy, stake: r.stake, window: r.windowSize, validationTrades: r.trades, validationWinRate: r.winRate, holdoutWinRate: r.holdout.winRate, scenarioNetPerTrade: r.scenarioNetPerTrade, preliminaryScreenPass: r.preliminaryScreenPass })) }))
 }, null, 2));
