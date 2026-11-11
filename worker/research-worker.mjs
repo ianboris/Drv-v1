@@ -37,9 +37,9 @@ function acceptTick(tick, source = "live") {
   const tickUid = providerId || `${symbol}:${epoch}:${quote}`;
   const key = `${symbol}:${tickUid}`;
   if (seen.has(key)) return;
+  if (queue.length >= MAX_QUEUE) throw new Error("Research queue reached its hard memory limit");
   seen.add(key);
   if (seen.size > 100000) seen = new Set([...seen].slice(-50000));
-  if (queue.length >= MAX_QUEUE) throw new Error("Research queue reached its hard memory limit");
   queue.push({symbol, epoch, quote: String(tick.quote), pip_size: precision,
     digit: digitFromQuote(quote, precision), tick_uid: tickUid, source});
   lastTickAt = Date.now();
