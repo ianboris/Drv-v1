@@ -22,11 +22,11 @@ export function wilsonInterval(wins, total, z = 1.96) {
   return { lower: Math.max(0, center - margin), upper: Math.min(1, center + margin) };
 }
 
-function chooseByFrequency(counts, lastSeen, mode) {
+function chooseByFrequency(counts, lastSeen, mode, windowStart) {
   const target = mode === 'least' ? Math.min(...counts) : Math.max(...counts);
   let chosen = 0, latest = -1;
   for (let digit = 0; digit < 10; digit++) {
-    if (counts[digit] === target && lastSeen[digit] > latest) {
+    if (counts[digit] === target && lastSeen[digit] >= windowStart && lastSeen[digit] > latest) {
       chosen = digit;
       latest = lastSeen[digit];
     }
@@ -53,7 +53,7 @@ function buildSignals(digits, windowSize, strategy) {
       if (share >= MIN_PARITY_EDGE) signals[i] = { barrier: null };
     } else {
       signals[i] = {
-        barrier: chooseByFrequency(counts, lastSeen, strategy === 'DIFFERS' ? 'least' : 'most'),
+        barrier: chooseByFrequency(counts, lastSeen, strategy === 'DIFFERS' ? 'least' : 'most', i - windowSize),
       };
     }
     const outgoing = digits[i - windowSize];
@@ -63,8 +63,6 @@ function buildSignals(digits, windowSize, strategy) {
     counts[incoming]++;
     lastSeen[incoming] = i;
     if (incoming % 2 === 0) evens++;
-    // lastSeen entries outside the rolling window cannot win a tie: every
-    // digit still present has a more recent index than any expired occurrence.
   }
   return signals;
 }
