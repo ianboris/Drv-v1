@@ -19,7 +19,7 @@ npm run test:strategy-lab
 node scripts/lotus-strategy-lab.mjs --archive-dir /var/lib/lotus/research --out /var/lib/lotus/research/strategy-report.json
 ```
 
-Capture current proposal quotes from Deriv's unauthenticated public proposal endpoint (read-only; it does not buy contracts). The currency is mandatory and must match the actual Deriv account currency. This captures all 0–9 barriers for Differs/Matches and both parity contracts at each tested stake for every archived market:
+Capture current proposal quotes from Deriv's unauthenticated public proposal endpoint (read-only; it does not buy contracts). The currency is mandatory and must match the actual Deriv account currency. Requests are paced at 200 ms to remain below Deriv's shared proposal/buy WebSocket budget. This captures all 0–9 barriers for Differs/Matches and both parity contracts at each tested stake for every archived market:
 
 ```bash
 npm run capture:proposals -- --currency USD --archive-dir /var/lib/lotus/research --out ./proposal-snapshots.json
