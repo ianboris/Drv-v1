@@ -248,6 +248,7 @@ async function recoverOpenOrder(socket, epoch, orderUid) {
         AND order_uid = ${orderUid} AND event_type = 'ORDER_RELEASED'
         AND payload->>'reason' = 'pre_buy_failure' ORDER BY id DESC LIMIT 1`;
     if (rejected.length || released.length) {
+      if (!released.length) await fencedEvent(epoch, "ORDER_RELEASED", orderUid, { reason: "buy_rejected_restart" });
       await releaseOrder(orderUid, epoch);
       return;
     }
