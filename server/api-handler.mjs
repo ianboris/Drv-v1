@@ -373,7 +373,7 @@ async function handle(request) {
       SET worker_epoch = worker_epoch + 1, desired_running = true, stop_requested = false,
           mode = 'PLUMBING_TEST', demo_account_id = ${accountId}, symbol = ${symbol},
           daily_loss_limit = COALESCE((SELECT daily_loss_limit FROM public.ddpe_settings WHERE owner_id = ${OWNER_ID}), daily_loss_limit),
-          plumbing_remaining = 10, consecutive_losses = 0, last_error = NULL,
+          last_error = NULL,
           updated_at = NOW()
       WHERE owner_id = ${OWNER_ID} AND in_flight_order_uid IS NULL AND buy_unknown = false
       RETURNING worker_epoch, mode, symbol, plumbing_remaining`;
