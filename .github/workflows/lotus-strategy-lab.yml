@@ -30,4 +30,5 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run test:strategy-lab
+      - run: npm run test:advanced-model
       - run: npm run build
