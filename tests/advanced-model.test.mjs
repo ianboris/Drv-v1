@@ -54,3 +54,13 @@ test('payout-aware decision does not trade when no captured quote is available',
   assert.equal(result.results[0].validation.trades, 0);
   assert.equal(result.results[0].validation.scenarioNetPnl, null);
 });
+
+test('live dashboard model selection returns a probability forecast after validation history', async () => {
+  const { selectForecastModel } = await import('../src/advanced-model.mjs');
+  const digits = Array.from({ length: 500 }, (_, i) => (i * 3 + Math.floor(i / 17)) % 10);
+  const selected = selectForecastModel(digits, 100, 50);
+  assert.ok(selected);
+  assert.equal(selected.validationObservations, 50);
+  assert.equal(selected.probabilities.length, 10);
+  assert.ok(Math.abs(selected.probabilities.reduce((a, b) => a + b, 0) - 1) < 1e-10);
+});
