@@ -115,7 +115,6 @@ function App() {
   const [tab, setTab] = useState<Tab>('overview');
   const [activeStrategy, setActiveStrategy] = useState<ResearchStrategy>('DIFFERS');
   const [analysisRunning, setAnalysisRunning] = useState(false);
-  const [liveMaster, setLiveMaster] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('lotus-theme') === 'light' ? 'light' : 'dark');
   const [symbol, setSymbol] = useState('1HZ100V');
   const [symbols, setSymbols] = useState<ActiveSymbol[]>([]);
