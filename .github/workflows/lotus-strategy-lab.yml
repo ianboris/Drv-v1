@@ -5,6 +5,12 @@ on:
     paths:
       - 'src/strategy-lab.mjs'
       - 'src/advanced-model.mjs'
+      - 'src/advanced-model.d.mts'
+      - 'src/main.tsx'
+      - 'src/style.css'
+      - 'src/advanced-model.d.mts'
+      - 'src/main.tsx'
+      - 'src/style.css'
       - 'tests/advanced-model.test.mjs'
       - 'docs/strategy-lab.md'
       - 'scripts/capture-deriv-proposals.mjs'
