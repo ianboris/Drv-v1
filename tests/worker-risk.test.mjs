@@ -49,7 +49,7 @@ test("least-frequency selection requires at least 50 digits", () => {
   assert.equal(leastFrequentDigit(Array(50).fill(1).concat(Array(50).fill(2))), 0);
 });
 test("payout-adjusted EV uses gross payout including stake", () => {
-  assert.equal(payoutAdjustedEv(0.9, 0.38, 0.35), -0.008);
+  assert.ok(Math.abs(payoutAdjustedEv(0.9, 0.38, 0.35) - (-0.008)) < 1e-12);
 });
 test("Wilson lower bound is bounded and below the observed rate", () => {
   const lower = wilsonLowerBound(90, 100);
