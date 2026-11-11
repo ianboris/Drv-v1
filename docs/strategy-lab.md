@@ -19,7 +19,7 @@ npm run test:strategy-lab
 node scripts/lotus-strategy-lab.mjs --archive-dir /var/lib/lotus/research --out /var/lib/lotus/research/strategy-report.json
 ```
 
-To include proposal-based payout scenarios, supply a JSON array with one or more records:
+Capture current proposal quotes from Deriv's unauthenticated public proposal endpoint (read-only; it does not buy contracts). The currency is mandatory and must match the actual Deriv account currency. This captures all 0–9 barriers for Differs/Matches and both parity contracts at each tested stake for every archived market:\n\n```bash\nnpm run capture:proposals -- --currency USD --archive-dir /var/lib/lotus/research --out ./proposal-snapshots.json\n```\n\nReplace `USD` with the exact account currency; do not guess. The collector writes both successful snapshots and failed/rejected proposal details.\n\nTo include proposal-based payout scenarios, supply that capture file or a JSON array with one or more records:
 
 ```json
 [
