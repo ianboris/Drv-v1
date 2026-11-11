@@ -47,27 +47,8 @@ function acceptTick(tick, source = "live") {
   if (queue.length >= FLUSH_COUNT) void flush().catch(error => console.error("[research] flush:", error.message));
 }
 
-function dailyGroups(ticks) {
-  const groups = new Map();
-  for (const tick of ticks) {
-    const day = utcDay(tick.epoch), key = `${day}|${tick.symbol}`;
-    if (!groups.has(key)) groups.set(key, {day, symbol:tick.symbol, count:0,
-      digits:Array(10).fill(0), first:tick.epoch, last:tick.epoch});
-    const group = groups.get(key);
-    group.count++;
-    group.digits[tick.digit]++;
-    group.first = Math.min(group.first, tick.epoch);
-    group.last = Math.max(group.last, tick.epoch);
-  }
-  return [...groups.values()].map(g => ({
-    day:g.day, symbol:g.symbol, tick_count:g.count, digit_counts:g.digits,
-    first_tick_epoch:g.first, last_tick_epoch:g.last
-  }));
-}
-
 async function commitBatch(batch) {
-  const groups = dailyGroups(batch.ticks);
-  // One PostgreSQL statement: ledger insertion and daily aggregation commit atomically.
+    // One PostgreSQL statement: ledger insertion and daily aggregation commit atomically.
   // If the batch ID already exists, accepted is empty and no aggregate is incremented.
   await sql`
     WITH accepted AS (
