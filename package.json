@@ -11,7 +11,8 @@
     "research": "node worker/research-worker.mjs",
     "test:research": "node --test tests/research-market-data.test.mjs",
     "test:strategy-lab": "node --test tests/strategy-lab.test.mjs",
-    "strategy:lab": "node scripts/lotus-strategy-lab.mjs"
+    "strategy:lab": "node scripts/lotus-strategy-lab.mjs",
+    "capture:proposals": "node scripts/capture-deriv-proposals.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
