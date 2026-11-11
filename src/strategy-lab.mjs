@@ -73,7 +73,8 @@ function payoutFor(map, symbol, strategy, barrier, stake) {
 function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, payoutMap) {
   let signals = 0, trades = 0, wins = 0, losses = 0, skipped = 0, lossStreak = 0, maxLossStreak = 0;
   let scenarioPnl = 0, peak = 0, maxDrawdown = 0, stopHit = false, stopAt = null;
-  let quoteMissing = 0, maxBreakEven = 0, minCapturedAt = Infinity, maxCapturedAt = 0, grossPayoutSum = 0;\n  const currencies = new Set();
+  let quoteMissing = 0, maxBreakEven = 0, minCapturedAt = Infinity, maxCapturedAt = 0, grossPayoutSum = 0;
+  const currencies = new Set();
   for (let i = Math.max(start, windowSize); i < end; i++) {
     const pick = signal(digits, i, windowSize, strategy);
     if (!pick) { skipped++; continue; }
@@ -88,7 +89,8 @@ function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, pay
     if (quote) {
       const breakEven = stake / quote.payout;
       maxBreakEven = Math.max(maxBreakEven, breakEven);
-      grossPayoutSum += quote.payout;\n      if (quote.currency) currencies.add(String(quote.currency));
+      grossPayoutSum += quote.payout;
+      if (quote.currency) currencies.add(String(quote.currency));
       if (quote.capturedAtMs) {
         minCapturedAt = Math.min(minCapturedAt, quote.capturedAtMs);
         maxCapturedAt = Math.max(maxCapturedAt, quote.capturedAtMs);
