@@ -9,7 +9,7 @@ import { digitFromQuote, normalizePipSize } from './market-data.mjs';
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
 const DERIV_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
-type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
+type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number; market?: string };
 type Settings = { stake: number; dailyLossLimit: number; takeProfitLimit: number; windowSize: number };
 type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
 type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
@@ -115,7 +115,6 @@ function App() {
   const [tab, setTab] = useState<Tab>('overview');
   const [activeStrategy, setActiveStrategy] = useState<ResearchStrategy>('DIFFERS');
   const [analysisRunning, setAnalysisRunning] = useState(false);
-  const [liveMaster, setLiveMaster] = useState(false);
   const [theme, setTheme] = useState<'dark' | 'light'>(() => localStorage.getItem('lotus-theme') === 'light' ? 'light' : 'dark');
   const [symbol, setSymbol] = useState('1HZ100V');
   const [symbols, setSymbols] = useState<ActiveSymbol[]>([]);
@@ -155,6 +154,7 @@ function App() {
     catch { return []; }
   });
   const ticksRef = useRef<Tick[]>([]);
+  const uiTickPublishTimerRef = useRef<number | undefined>();
   useEffect(() => { analysisStateRef.current = { running: analysisRunning, strategy: activeStrategy }; }, [analysisRunning, activeStrategy]);
   useEffect(() => { try { localStorage.setItem('lotus-theme', theme); } catch {} document.body.dataset.theme = theme; }, [theme]);
   const pendingChoicesRef = useRef<Map<string, { id: string; symbol: string; barrier: number; predictedEpoch: number; analysisWindow: number }>>(new Map());
@@ -334,7 +334,7 @@ function App() {
             return;
           }
           if (response.msg_type === 'active_symbols') {
-            const list: ActiveSymbol[] = response.active_symbols || [];
+            const list: ActiveSymbol[] = (response.active_symbols || []).filter((item: ActiveSymbol) => item.market === 'synthetic_index' && !/boom|crash/i.test(`${item.underlying_symbol} ${item.underlying_symbol_name || ''}`));
             setSymbols(list);
             // Cache symbol precision, but keep exactly one live tick subscription.
             // Subscribing to every returned market exhausted Deriv's subscription capacity.
@@ -516,7 +516,13 @@ function App() {
                 ticksBySymbolRef.current.set(marketSymbol, nextTicks);
                 if (marketSymbol === selectedSymbolRef.current) {
                   ticksRef.current = nextTicks;
-                  setTicks(nextTicks);
+                  // Keep the feed hot in refs, but batch React renders to avoid a full dashboard render per tick.
+                  if (uiTickPublishTimerRef.current === undefined) {
+                    uiTickPublishTimerRef.current = window.setTimeout(() => {
+                      uiTickPublishTimerRef.current = undefined;
+                      setTicks(ticksRef.current);
+                    }, 75);
+                  }
                 }
               }
             }
@@ -1236,7 +1242,7 @@ function App() {
 
     <nav className="tabs" aria-label="Main navigation">
       <button className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>Overview</button>
-      <button className={tab === 'engine' ? 'active' : ''} onClick={() => setTab('engine')}>Differs / Matches</button>
+      <button className={tab === 'engine' ? 'active' : ''} onClick={() => setTab('engine')}>Digit engines</button>
       <button className={tab === 'wins' ? 'active' : ''} onClick={() => setTab('wins')}>Wins</button>
       <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}>Journal</button>
       <button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>Settings</button>
@@ -1326,8 +1332,8 @@ function App() {
         </tbody></table></div>
         <small className="muted">Controls: one open contract at a time, 1-second cooldown and browser-enforced daily loss and profit stops. Historical walk-forward validation uses the already-loaded tick history; it does not wait for 100 new live paper outcomes. The bot runs only while this dashboard remains open. These controls are demo safeguards, not server-enforced live risk controls. Even/Odd remains research-only.</small>
       </section>
-      <section className="panel"><div className="section-heading">LIVE TRADING MASTER SWITCH</div><div className="master-row"><div><strong>Live execution</strong><p className="muted">Locked pending account authorization, verified settlement reconciliation and server-enforced risk controls.</p></div><div className="master-actions"><button className="master-switch" disabled aria-pressed={liveMaster}>OFF · LOCKED</button><button className="stop-button" onClick={() => setLiveMaster(false)}>STOP EXECUTION</button></div></div></section>
-      <section className="panel"><div className="section-heading">CROSS-MARKET RESEARCH</div><p className="muted">Public market ticks are collected while this dashboard is open. Closing the browser stops the live collector in this version.</p><div className="candidate-row"><span>Markets subscribed</span><strong>{symbols.length}</strong></div><div className="candidate-row"><span>Live tick stream</span><strong>{status}</strong></div><div className="candidate-row"><span>Persisted research decisions</span><strong>{researchDecisions.length}</strong></div></section>
+
+
     </>}
 
     {tab === 'wins' && <>

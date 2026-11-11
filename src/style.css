@@ -287,3 +287,16 @@ footer { color:#647d95; }
   .overview-money-grid { grid-template-columns:1fr 1fr; }
   .money-card { min-height:132px; }
 }
+
+/* Focused digit cockpit: clearer live feedback and lower-friction controls */
+.tabs{position:sticky;top:0;z-index:20;backdrop-filter:blur(16px)}
+.tabs button{transition:background .12s ease,color .12s ease,transform .12s ease}
+.tabs button:hover:not(.active){background:#211b2b;color:#f4eaff}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #c2a5e8;outline-offset:2px}
+.strategy-switch button{min-height:94px;transition:border-color .12s ease,background .12s ease,transform .12s ease}
+.strategy-switch button:hover:not(:disabled){transform:translateY(-1px);border-color:#b79bd8}
+.strategy-switch button.selected{box-shadow:inset 0 0 0 1px #b79bd8,0 8px 24px #0003}
+.signal-digit{font-variant-numeric:tabular-nums;transition:opacity .08s ease}
+.digits span{transition:background .08s ease,border-color .08s ease}
+.panel{transition:border-color .12s ease}
+@media(max-width:560px){.tabs{grid-template-columns:repeat(5,minmax(0,1fr));overflow-x:auto}.tabs button{font-size:10px;padding:10px 3px}.strategy-switch{gap:7px}.strategy-switch button{padding:12px;min-height:86px}.research-signal{margin:12px 0;padding:15px}}
