@@ -219,8 +219,12 @@ async function connect() {
   });
   socket.addEventListener("close", () => { if (!stopping) console.warn("[research] Deriv socket closed"); });
   send({active_symbols:"brief"});
+  const symbolsDeadline = Date.now() + 15000;
+  while (symbols.size === 0 && Date.now() < symbolsDeadline && socket?.readyState === WebSocket.OPEN) {
+    await sleep(100);
+  }
+  if (symbols.size === 0) throw new Error("Deriv active_symbols returned no eligible synthetic indices within 15 seconds");
   heartbeatTimer = setInterval(() => { try { send({ping:1}); } catch {} }, 25000);
-  await sleep(1200);
   for (const symbol of symbols.keys()) {
     if (stopping) break;
     try {
