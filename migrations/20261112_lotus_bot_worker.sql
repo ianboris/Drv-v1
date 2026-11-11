@@ -4,6 +4,8 @@
 CREATE TABLE IF NOT EXISTS public.ddpe_bot_control (
   owner_id text PRIMARY KEY CHECK (owner_id = 'primary'),
   worker_epoch integer NOT NULL DEFAULT 0 CHECK (worker_epoch >= 0),
+  worker_instance_id text,
+  worker_lease_expires_at timestamptz,
   desired_running boolean NOT NULL DEFAULT false,
   stop_requested boolean NOT NULL DEFAULT true,
   mode text NOT NULL DEFAULT 'PLUMBING_TEST'
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_events (
   event_uid text NOT NULL UNIQUE,
   owner_id text NOT NULL DEFAULT 'primary' CHECK (owner_id = 'primary'),
   worker_epoch integer NOT NULL,
+  worker_instance_id text,
   event_type text NOT NULL CHECK (event_type IN (
     'WORKER_STARTED', 'WORKER_STOP_REQUESTED', 'HEARTBEAT',
     'DECISION', 'ORDER_RESERVED', 'PROPOSAL_RECEIVED',
@@ -52,6 +55,13 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_events (
 
 ALTER TABLE public.ddpe_daily_risk
   ADD COLUMN IF NOT EXISTS worker_epoch integer NOT NULL DEFAULT 0;
+ALTER TABLE public.ddpe_bot_control
+  ADD COLUMN IF NOT EXISTS worker_instance_id text,
+  ADD COLUMN IF NOT EXISTS worker_lease_expires_at timestamptz;
+ALTER TABLE public.ddpe_bot_events
+  ADD COLUMN IF NOT EXISTS worker_instance_id text;
+ALTER TABLE public.ddpe_bot_settlements
+  ADD COLUMN IF NOT EXISTS worker_instance_id text;
 
 CREATE INDEX IF NOT EXISTS ddpe_bot_events_owner_created_idx
   ON public.ddpe_bot_events (owner_id, created_at DESC);
@@ -63,6 +73,7 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_settlements (
   contract_id bigint PRIMARY KEY,
   order_uid text NOT NULL UNIQUE,
   worker_epoch integer NOT NULL,
+  worker_instance_id text,
   profit numeric(18,8) NOT NULL,
   contract_status text NOT NULL CHECK (contract_status IN ('won', 'lost', 'sold', 'cancelled')),
   created_at timestamptz NOT NULL DEFAULT now()
@@ -71,6 +82,7 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_settlements (
 CREATE OR REPLACE FUNCTION public.ddpe_apply_bot_settlement(
   p_owner_id text,
   p_worker_epoch integer,
+  p_instance_id text,
   p_order_uid text,
   p_contract_id bigint,
   p_profit numeric,
@@ -84,6 +96,7 @@ BEGIN
   SELECT mode, daily_loss_limit INTO v_mode, v_loss_limit
   FROM public.ddpe_bot_control
   WHERE owner_id = p_owner_id AND worker_epoch = p_worker_epoch
+    AND worker_instance_id = p_instance_id AND worker_lease_expires_at > NOW()
     AND in_flight_order_uid = p_order_uid AND buy_unknown = false
   FOR UPDATE;
 
@@ -93,8 +106,8 @@ BEGIN
   END IF;
 
   INSERT INTO public.ddpe_bot_settlements
-    (contract_id, order_uid, worker_epoch, profit, contract_status)
-  VALUES (p_contract_id, p_order_uid, p_worker_epoch, p_profit, p_contract_status)
+    (contract_id, order_uid, worker_epoch, worker_instance_id, profit, contract_status)
+  VALUES (p_contract_id, p_order_uid, p_worker_epoch, p_instance_id, p_profit, p_contract_status)
   ON CONFLICT DO NOTHING;
 
   GET DIAGNOSTICS v_inserted = ROW_COUNT;
@@ -119,8 +132,8 @@ BEGIN
     updated_at = NOW();
 
   INSERT INTO public.ddpe_bot_events
-    (event_uid, owner_id, worker_epoch, event_type, order_uid, deriv_contract_id, mode, payload)
-  VALUES (md5(clock_timestamp()::text || random()::text), p_owner_id, p_worker_epoch,
+    (event_uid, owner_id, worker_epoch, worker_instance_id, event_type, order_uid, deriv_contract_id, mode, payload)
+  VALUES (md5(clock_timestamp()::text || random()::text), p_owner_id, p_worker_epoch, p_instance_id,
     'CONTRACT_SETTLED', p_order_uid, p_contract_id, v_mode,
     jsonb_build_object('profit', p_profit, 'status', p_contract_status));
 
@@ -128,6 +141,7 @@ BEGIN
   SET consecutive_losses = CASE WHEN p_profit < 0 THEN consecutive_losses + 1 ELSE 0 END,
       in_flight_order_uid = NULL, updated_at = NOW()
   WHERE owner_id = p_owner_id AND worker_epoch = p_worker_epoch
+    AND worker_instance_id = p_instance_id AND worker_lease_expires_at > NOW()
     AND in_flight_order_uid = p_order_uid AND buy_unknown = false;
 
   IF NOT FOUND THEN
@@ -136,8 +150,8 @@ BEGIN
   END IF;
 
   INSERT INTO public.ddpe_bot_events
-    (event_uid, owner_id, worker_epoch, event_type, order_uid, deriv_contract_id, mode, payload)
-  VALUES (md5(clock_timestamp()::text || random()::text), p_owner_id, p_worker_epoch,
+    (event_uid, owner_id, worker_epoch, worker_instance_id, event_type, order_uid, deriv_contract_id, mode, payload)
+  VALUES (md5(clock_timestamp()::text || random()::text), p_owner_id, p_worker_epoch, p_instance_id,
     'ORDER_RELEASED', p_order_uid, p_contract_id, v_mode,
     '{"reason":"settled"}'::jsonb);
 
@@ -148,11 +162,14 @@ $body$;
 
 CREATE OR REPLACE FUNCTION public.ddpe_bot_settlements_guard_insert()
 RETURNS trigger LANGUAGE plpgsql AS $body$
-DECLARE current_epoch integer;
+DECLARE current_epoch integer; current_instance text; current_lease timestamptz;
 BEGIN
-  SELECT worker_epoch INTO current_epoch FROM public.ddpe_bot_control
-  WHERE owner_id = 'primary' FOR SHARE;
-  IF current_epoch IS NULL OR NEW.worker_epoch <> current_epoch THEN
+  SELECT worker_epoch, worker_instance_id, worker_lease_expires_at
+    INTO current_epoch, current_instance, current_lease
+  FROM public.ddpe_bot_control WHERE owner_id = 'primary' FOR SHARE;
+  IF current_epoch IS NULL OR NEW.worker_epoch <> current_epoch
+    OR NEW.worker_instance_id IS DISTINCT FROM current_instance
+    OR current_lease IS NULL OR current_lease <= NOW() THEN
     RAISE EXCEPTION 'stale worker epoch for settlement' USING ERRCODE = '40001';
   END IF;
   RETURN NEW;
@@ -179,14 +196,15 @@ FOR EACH ROW EXECUTE FUNCTION public.ddpe_bot_settlements_append_only();
 
 CREATE OR REPLACE FUNCTION public.ddpe_bot_events_guard_insert()
 RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE current_epoch integer;
+DECLARE current_epoch integer; current_instance text; current_lease timestamptz;
 BEGIN
-  SELECT worker_epoch INTO current_epoch
-  FROM public.ddpe_bot_control
-  WHERE owner_id = NEW.owner_id
-  FOR SHARE;
+  SELECT worker_epoch, worker_instance_id, worker_lease_expires_at
+    INTO current_epoch, current_instance, current_lease
+  FROM public.ddpe_bot_control WHERE owner_id = NEW.owner_id FOR SHARE;
 
-  IF current_epoch IS NULL OR NEW.worker_epoch <> current_epoch THEN
+  IF current_epoch IS NULL OR NEW.worker_epoch <> current_epoch
+    OR (NEW.worker_instance_id IS NOT NULL AND
+      (NEW.worker_instance_id IS DISTINCT FROM current_instance OR current_lease IS NULL OR current_lease <= NOW())) THEN
     RAISE EXCEPTION 'stale worker epoch: event %, current %', NEW.worker_epoch, current_epoch
       USING ERRCODE = '40001';
   END IF;
