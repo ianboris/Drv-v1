@@ -1,6 +1,7 @@
 import { neon } from "@neondatabase/serverless";
 import { createDecipheriv, randomUUID } from "node:crypto";
 import { assertRiskAllowed, digitFromQuote, leastFrequentDigit } from "./risk.mjs";
+import { reserveOrder } from "./control.mjs";
 
 const OWNER_ID = "primary";
 const POLL_MS = 1000;
@@ -120,18 +121,6 @@ async function heartbeat(epoch) {
   if (rows.length !== 1) throw new Error("STALE_WORKER_EPOCH");
   await fencedEvent(epoch, "HEARTBEAT");
 }
-async function reserveOrder(orderUid, epoch) {
-  // Atomic stop + epoch + buy-unknown check and slot reservation.
-  // The same statement is repeated before buy; the UID predicate permits only
-  // this order to revalidate its existing reservation.
-  const rows = await sql`UPDATE public.ddpe_bot_control
-    SET in_flight_order_uid = ${orderUid}, updated_at = NOW()
-    WHERE owner_id = ${OWNER_ID} AND stop_requested = false AND buy_unknown = false
-      AND worker_epoch = ${epoch}
-      AND (in_flight_order_uid IS NULL OR in_flight_order_uid = ${orderUid})
-    RETURNING owner_id`;
-  return rows.length === 1;
-}
 async function releaseOrder(orderUid, epoch) {
   await sql`UPDATE public.ddpe_bot_control SET in_flight_order_uid = NULL, updated_at = NOW()
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
@@ -189,7 +178,7 @@ async function findConfirmedContract(socket, epoch, orderUid) {
   const transactions = statement.statement?.transactions;
   if (!Array.isArray(transactions)) throw new Error("Deriv statement response has no transactions array.");
   const candidates = transactions.filter((tx) => {
-    const amountMatches = Number.isFinite(Number(tx.amount)) && Math.abs(Number(tx.amount) + stake) < 0.0000001;
+    const amountMatches = Number.isFinite(Number(tx.amount)) && Math.abs(Math.abs(Number(tx.amount)) - stake) < 0.0000001;
     const timeMatches = Number(tx.transaction_time) >= from && Number(tx.transaction_time) <= to;
     const description = `${tx.shortcode || ""} ${tx.longcode || ""}`;
     const symbolMatches = symbol && description.includes(symbol);
