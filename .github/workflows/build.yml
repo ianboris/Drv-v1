@@ -30,8 +30,8 @@ jobs:
       - name: Install dependencies
         run: npm install
       - name: Check Vercel backend function syntax
-        run: node --check server/api-handler.mjs && node --check api/index.mjs
+        run: node --check server/api-handler.mjs && node --check api/index.mjs && node --check worker/bot-worker.mjs && node --check worker/control.mjs && node --check worker/risk.mjs
       - name: Run API smoke tests
-        run: node --test tests/api.test.mjs
+        run: npm run test:api
       - name: Run TypeScript and Vite production build
         run: npm run build
