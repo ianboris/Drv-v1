@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - 'src/strategy-lab.mjs'
+      - 'src/advanced-model.mjs'
+      - 'tests/advanced-model.test.mjs'
+      - 'docs/strategy-lab.md'
       - 'scripts/capture-deriv-proposals.mjs'
       - 'scripts/lotus-strategy-lab.mjs'
       - 'tests/strategy-lab.test.mjs'
