@@ -19,7 +19,7 @@ type ResearchStrategy = 'DIFFERS' | 'MATCHES' | 'EVEN' | 'ODD';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
 type DemoDigitTrade = { contractId: string; accountId: string; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
-type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; proposalId?: string; askPrice?: number };
+type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; proposalId?: string; askPrice?: number; proposalSubscriptionId?: string };
 const DEMO_TRADES_KEY = 'lotus-demo-digit-trades-v1';
 const DEMO_DAILY_KEY = 'lotus-demo-digit-daily-v1';
 function readDemoTrades(): DemoDigitTrade[] { try { const value = JSON.parse(localStorage.getItem(DEMO_TRADES_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } }
@@ -939,6 +939,9 @@ function App() {
         }
         if (data.error) {
           const failedRequest = demoOrderRequestsRef.current.get(reqId);
+          if (failedRequest?.proposalSubscriptionId) {
+            try { socket.send(JSON.stringify({ forget: failedRequest.proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {}
+          }
           if (Number.isInteger(reqId)) {
             clearDemoOrderTimeout(reqId);
             demoOrderRequestsRef.current.delete(reqId);
@@ -958,35 +961,42 @@ function App() {
           if (!request || request.kind !== 'proposal') return;
           clearDemoOrderTimeout(reqId);
           demoOrderRequestsRef.current.delete(reqId);
+          const proposalSubscriptionId = String(data.subscription?.id || '');
+          const forgetProposal = () => { if (proposalSubscriptionId) { try { socket.send(JSON.stringify({ forget: proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {} } };
           if (!demoAutoTradingRef.current || openDemoContractRef.current || demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit || demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) {
+            forgetProposal();
             setDemoTradeMessage('Demo purchase cancelled because the bot was stopped or the next full stake would exceed the daily loss limit.');
             return;
           }
           const proposalId = String(data.proposal.id || '');
           const askPrice = Number(data.proposal.ask_price);
-          if (!proposalId || !Number.isFinite(askPrice) || askPrice <= 0) {
-            setDemoTradeMessage('Deriv returned an invalid demo proposal; no purchase was sent.');
+          if (!proposalId || !proposalSubscriptionId || !Number.isFinite(askPrice) || askPrice <= 0) {
+            forgetProposal();
+            setDemoTradeMessage('Deriv returned an invalid or non-streaming demo proposal; no purchase was sent.');
             return;
           }
           const payout = Number(data.proposal.payout);
           const evidence = getWalkForwardEvidence(request.symbol, ticksBySymbolRef.current.get(request.symbol) || [], request.strategy, settingsRef.current.windowSize);
           if (!evidence || evidence.testTrades < 100 || !Number.isFinite(payout) || payout <= askPrice) {
+            forgetProposal();
             setDemoTradeMessage(`Quote rejected: insufficient historical walk-forward evidence (${evidence?.testTrades ?? 0}/100 test predictions) or invalid payout. No purchase was sent.`);
             return;
           }
           const conservativeWinProbability = wilsonLowerBound(evidence.wins, evidence.testTrades);
           const conservativeExpectedValue = conservativeWinProbability * payout - askPrice;
           if (!(conservativeExpectedValue > 0)) {
+            forgetProposal();
             setDemoTradeMessage(`No purchase: conservative estimated value is ${conservativeExpectedValue.toFixed(4)} ${demoCurrencyRef.current} at ${(conservativeWinProbability * 100).toFixed(2)}% lower-bound win probability.`);
             return;
           }
           const buyReqId = demoRequestIdRef.current++;
-          demoOrderRequestsRef.current.set(buyReqId, { ...request, kind: 'buy', proposalId, askPrice });
+          demoOrderRequestsRef.current.set(buyReqId, { ...request, kind: 'buy', proposalId, askPrice, proposalSubscriptionId });
           armDemoOrderTimeout(buyReqId, 'buy', 15000);
           try {
             socket.send(JSON.stringify({ buy: proposalId, price: askPrice, req_id: buyReqId }));
             setDemoTradeMessage('Fresh quote received. Submitting demo purchase…');
           } catch {
+            forgetProposal();
             clearDemoOrderTimeout(buyReqId);
             demoOrderRequestsRef.current.delete(buyReqId);
             demoAutoTradingRef.current = false;
@@ -1000,6 +1010,7 @@ function App() {
           if (!request || request.kind !== 'buy') return;
           clearDemoOrderTimeout(reqId);
           demoOrderRequestsRef.current.delete(reqId);
+          if (request.proposalSubscriptionId) { try { socket.send(JSON.stringify({ forget: request.proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {} }
           const contractId = String(data.buy.contract_id || '');
           if (!/^\d+$/.test(contractId)) {
             setDemoTradeMessage('Deriv did not return a valid contract ID.');
@@ -1146,7 +1157,7 @@ function App() {
     armDemoOrderTimeout(reqId, 'proposal', 12000);
     const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : 'DIGITMATCH';
     try {
-      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), req_id: reqId }));
+      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), subscribe: 1, req_id: reqId }));
       setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
     } catch {
       clearDemoOrderTimeout(reqId);
