@@ -75,7 +75,7 @@ CREATE OR REPLACE FUNCTION public.ddpe_apply_bot_settlement(
   p_contract_id bigint,
   p_profit numeric,
   p_contract_status text
-) RETURNS boolean LANGUAGE plpgsql AS $
+) RETURNS boolean LANGUAGE plpgsql AS $body$
 DECLARE
   v_mode text;
   v_loss_limit numeric(18,8);
@@ -143,11 +143,11 @@ BEGIN
 
   RETURN true;
 END;
-$;
+$body$;
 
 
 CREATE OR REPLACE FUNCTION public.ddpe_bot_settlements_guard_insert()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $body$
 DECLARE current_epoch integer;
 BEGIN
   SELECT worker_epoch INTO current_epoch FROM public.ddpe_bot_control
@@ -157,15 +157,15 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$;
+$body$;
 
 CREATE OR REPLACE FUNCTION public.ddpe_bot_settlements_append_only()
-RETURNS trigger LANGUAGE plpgsql AS $
+RETURNS trigger LANGUAGE plpgsql AS $body$
 BEGIN
   RAISE EXCEPTION 'ddpe_bot_settlements is append-only'
     USING ERRCODE = '55000';
 END;
-$;
+$body$;
 
 DROP TRIGGER IF EXISTS ddpe_bot_settlements_epoch_guard ON public.ddpe_bot_settlements;
 CREATE TRIGGER ddpe_bot_settlements_epoch_guard
