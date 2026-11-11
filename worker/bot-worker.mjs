@@ -475,13 +475,29 @@ async function runWorker() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Worker error";
       if (activeEpoch !== null) {
+        // Recoverable transport failures reconnect without clearing the user's
+        // run request. Auth, risk, schema, Deriv rejection, and state-integrity
+        // failures fail closed. BUY_UNKNOWN keeps its durable halt unchanged.
+        const transient = error?.code === "ECONNRESET" || error?.code === "ETIMEDOUT" ||
+          error?.code === "ECONNREFUSED" || error?.code === "ENOTFOUND" ||
+          /WebSocket (closed|connection failed|connection timed out|is not open)|request timed out|fetch failed|Deriv REST request failed \(5\d\d\)/i.test(message);
         try {
-          await sql`UPDATE public.ddpe_bot_control
-            SET last_error = ${message.slice(0, 500)}, desired_running = false,
-                stop_requested = true, updated_at = NOW()
-            WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${activeEpoch}
-              AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()`;
-          await fencedEvent(activeEpoch, "WORKER_ERROR", null, { error: message.slice(0, 300) });
+          if (transient) {
+            await sql`UPDATE public.ddpe_bot_control
+              SET last_error = ${message.slice(0, 500)}, updated_at = NOW()
+              WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${activeEpoch}
+                AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()
+                AND buy_unknown = false`;
+          } else {
+            await sql`UPDATE public.ddpe_bot_control
+              SET last_error = ${message.slice(0, 500)}, desired_running = false,
+                  stop_requested = true, updated_at = NOW()
+              WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${activeEpoch}
+                AND worker_instance_id = ${INSTANCE_ID} AND worker_lease_expires_at > NOW()`;
+          }
+          await fencedEvent(activeEpoch, "WORKER_ERROR", null, {
+            error: message.slice(0, 300), recoverable: transient,
+          });
         } catch {}
       }
       socket?.close(); socket = null; activeEpoch = null; lastLeaseRenewAt = 0;
