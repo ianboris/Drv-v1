@@ -203,11 +203,18 @@ async function connect() {
     try { message = JSON.parse(String(event.data)); } catch { return; }
     if (message.error) { console.warn("[research] Deriv response error:", message.error.message); return; }
     if (message.msg_type === "active_symbols") {
+      // Only collect open, unsuspended random indices. Deriv also labels
+      // Boom/Crash instruments as synthetic_index, so market alone is not enough.
       const allowed = (message.active_symbols || []).filter(item =>
-        item.market === "synthetic_index" && item.underlying_symbol &&
+        item.market === "synthetic_index" &&
+        item.submarket === "random_index" &&
+        item.exchange_is_open === 1 &&
+        item.is_trading_suspended === 0 &&
+        Boolean(item.underlying_symbol) &&
         !/boom|crash/i.test(`${item.underlying_symbol} ${item.underlying_symbol_name || ""}`));
       symbols = new Map(allowed.slice(0, MAX_SYMBOLS).map(item =>
         [item.underlying_symbol, {pipSize:normalizePipSize(item.pip_size)}]));
+      console.log(`[research] eligible random indices: ${allowed.length}; subscribing to: ${[...symbols.keys()].join(", ")}`);
       for (const symbol of symbols.keys()) send({ticks:symbol, subscribe:1});
       void writeHealth("CONNECTED").catch(error => console.error("[research] health:", error.message));
     } else if (message.msg_type === "tick" && message.tick) {
