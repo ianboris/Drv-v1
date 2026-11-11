@@ -151,7 +151,7 @@ async function settleOrder(orderUid, epoch, contractId, profit, status) {
   const rows = await sql`SELECT public.ddpe_apply_bot_settlement(
     ${OWNER_ID}, ${epoch}, ${INSTANCE_ID}, ${orderUid}, ${contractId}, ${pnl}, ${status}
   ) AS applied`;
-  if (rows.length !== 1) throw new Error("Settlement transaction returned no result.");
+  if (rows.length !== 1 || rows[0].applied !== true) throw new Error("Settlement was not newly applied; inspect the immutable settlement ledger.");
 }
 async function monitorContract(socket, epoch, orderUid, contractId) {
   while (true) {
