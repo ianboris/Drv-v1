@@ -4,6 +4,12 @@ on:
   pull_request:
     paths:
       - 'src/strategy-lab.mjs'
+      - 'src/advanced-model.mjs'
+      - 'src/advanced-model.d.mts'
+      - 'src/main.tsx'
+      - 'src/style.css'
+      - 'tests/advanced-model.test.mjs'
+      - 'docs/strategy-lab.md'
       - 'scripts/capture-deriv-proposals.mjs'
       - 'scripts/lotus-strategy-lab.mjs'
       - 'tests/strategy-lab.test.mjs'
@@ -12,8 +18,15 @@ on:
   push:
     branches:
       - feat/lotus-stake-window-optimization
+      - feat/lotus-advanced-model
     paths:
       - 'src/strategy-lab.mjs'
+      - 'src/advanced-model.mjs'
+      - 'src/advanced-model.d.mts'
+      - 'src/main.tsx'
+      - 'src/style.css'
+      - 'tests/advanced-model.test.mjs'
+      - 'docs/strategy-lab.md'
       - 'scripts/capture-deriv-proposals.mjs'
       - 'scripts/lotus-strategy-lab.mjs'
       - 'tests/strategy-lab.test.mjs'
@@ -30,4 +43,5 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run test:strategy-lab
+      - run: npm run test:advanced-model
       - run: npm run build

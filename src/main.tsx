@@ -4,6 +4,7 @@ import './style.css';
 import { calculateContractEconomics } from './riskCalculator';
 import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
 import { digitFromQuote, normalizePipSize } from './market-data.mjs';
+import { selectForecastModel } from './advanced-model.mjs';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -18,7 +19,7 @@ type ResearchStrategy = 'DIFFERS' | 'MATCHES' | 'EVEN' | 'ODD';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
 type DemoDigitTrade = { contractId: string; accountId: string; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
-type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; proposalId?: string; askPrice?: number };
+type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; proposalId?: string; askPrice?: number; proposalSubscriptionId?: string };
 const DEMO_TRADES_KEY = 'lotus-demo-digit-trades-v1';
 const DEMO_DAILY_KEY = 'lotus-demo-digit-daily-v1';
 function readDemoTrades(): DemoDigitTrade[] { try { const value = JSON.parse(localStorage.getItem(DEMO_TRADES_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } }
@@ -94,7 +95,7 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
 // from running again on every live tick while still invalidating when the market history changes.
 const walkForwardEvidenceCache = new Map<string, { sampleId: string; result: WalkForwardBacktestResult }>();
 function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: 'DIFFERS' | 'MATCHES', windowSize: number): WalkForwardBacktestResult | null {
-  const historyTicks = ticks.filter(tick => tick.source === 'history').slice(-5000);
+  const historyTicks = ticks.filter(tick => tick.source === 'history').slice(-5500);
   const sampleId = historyTicks.length ? historyTicks[historyTicks.length - 1].id : '';
   const cacheKey = `${marketSymbol}:${strategy}:${windowSize}`;
   const cached = walkForwardEvidenceCache.get(cacheKey);
@@ -370,7 +371,7 @@ function App() {
             const precision = pipSizesBySymbolRef.current.get(historySymbol);
             const merged = new Map<string, Tick>();
             [...history, ...(ticksBySymbolRef.current.get(historySymbol) || [])].forEach((tick) => merged.set(tick.id, tick));
-            let nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5000);
+            let nextTicks = [...merged.values()].sort((a, b) => a.epoch - b.epoch).slice(-5500);
             if (precision !== undefined) {
               nextTicks = nextTicks.map((tick) => tick.pipSize === undefined
                 ? { ...tick, pipSize: precision, lastDigit: digitFromQuote(tick.quote, precision) }
@@ -511,7 +512,7 @@ function App() {
                 const appendedTicks = !lastTick || tick.epoch >= lastTick.epoch
                   ? [...currentTicks, tick]
                   : [...currentTicks, tick].sort((a, b) => a.epoch - b.epoch);
-                const nextTicks = appendedTicks.slice(-5000);
+                const nextTicks = appendedTicks.slice(-5500);
                 if (seenTickIds.size > 6000) tickIdsBySymbolRef.current.set(marketSymbol, new Set(nextTicks.map(item => item.id)));
                 ticksBySymbolRef.current.set(marketSymbol, nextTicks);
                 if (marketSymbol === selectedSymbolRef.current) {
@@ -688,6 +689,11 @@ function App() {
   const rollingDigits = digits.slice(-settings.windowSize);
   const stats = useMemo(() => getStats(rollingDigits), [rollingDigits]);
   const overallStats = useMemo(() => getStats(digits), [digits]);
+  const advancedForecast = useMemo(() => {
+    const validationTicks = Math.min(50, Math.floor(digits.length * 0.1));
+    if (validationTicks < 20 || digits.length < settings.windowSize + validationTicks) return null;
+    return selectForecastModel(digits, settings.windowSize, validationTicks);
+  }, [digits, settings.windowSize]);
   const marketName = symbols.find((item) => item.underlying_symbol === symbol)?.underlying_symbol_name || symbol;
   const scannerRows = useMemo(() => symbols.map((item) => {
     const history = choiceAggregates.filter((choice) => choice.symbol === item.underlying_symbol);
@@ -781,6 +787,10 @@ function App() {
       const pending = demoOrderRequestsRef.current.get(reqId);
       if (!pending || pending.kind !== kind) return;
       demoOrderRequestsRef.current.delete(reqId);
+      if (pending.proposalSubscriptionId) {
+        const socket = demoWs.current;
+        if (socket?.readyState === WebSocket.OPEN) { try { socket.send(JSON.stringify({ forget: pending.proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {} }
+      }
       if (kind === 'buy') {
         // A timed-out buy may have reached Deriv even if its acknowledgement did not reach us.
         // Pause rather than retry: the user must inspect Deriv's demo contract history first.
@@ -933,6 +943,9 @@ function App() {
         }
         if (data.error) {
           const failedRequest = demoOrderRequestsRef.current.get(reqId);
+          if (failedRequest?.proposalSubscriptionId) {
+            try { socket.send(JSON.stringify({ forget: failedRequest.proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {}
+          }
           if (Number.isInteger(reqId)) {
             clearDemoOrderTimeout(reqId);
             demoOrderRequestsRef.current.delete(reqId);
@@ -952,35 +965,42 @@ function App() {
           if (!request || request.kind !== 'proposal') return;
           clearDemoOrderTimeout(reqId);
           demoOrderRequestsRef.current.delete(reqId);
+          const proposalSubscriptionId = String(data.subscription?.id || '');
+          const forgetProposal = () => { if (proposalSubscriptionId) { try { socket.send(JSON.stringify({ forget: proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {} } };
           if (!demoAutoTradingRef.current || openDemoContractRef.current || demoDailyPnlRef.current >= settingsRef.current.takeProfitLimit || demoDailyPnlRef.current - settingsRef.current.stake < -settingsRef.current.dailyLossLimit - 1e-9) {
+            forgetProposal();
             setDemoTradeMessage('Demo purchase cancelled because the bot was stopped or the next full stake would exceed the daily loss limit.');
             return;
           }
           const proposalId = String(data.proposal.id || '');
           const askPrice = Number(data.proposal.ask_price);
-          if (!proposalId || !Number.isFinite(askPrice) || askPrice <= 0) {
-            setDemoTradeMessage('Deriv returned an invalid demo proposal; no purchase was sent.');
+          if (!proposalId || !proposalSubscriptionId || !Number.isFinite(askPrice) || askPrice <= 0) {
+            forgetProposal();
+            setDemoTradeMessage('Deriv returned an invalid or non-streaming demo proposal; no purchase was sent.');
             return;
           }
           const payout = Number(data.proposal.payout);
           const evidence = getWalkForwardEvidence(request.symbol, ticksBySymbolRef.current.get(request.symbol) || [], request.strategy, settingsRef.current.windowSize);
           if (!evidence || evidence.testTrades < 100 || !Number.isFinite(payout) || payout <= askPrice) {
+            forgetProposal();
             setDemoTradeMessage(`Quote rejected: insufficient historical walk-forward evidence (${evidence?.testTrades ?? 0}/100 test predictions) or invalid payout. No purchase was sent.`);
             return;
           }
           const conservativeWinProbability = wilsonLowerBound(evidence.wins, evidence.testTrades);
           const conservativeExpectedValue = conservativeWinProbability * payout - askPrice;
           if (!(conservativeExpectedValue > 0)) {
+            forgetProposal();
             setDemoTradeMessage(`No purchase: conservative estimated value is ${conservativeExpectedValue.toFixed(4)} ${demoCurrencyRef.current} at ${(conservativeWinProbability * 100).toFixed(2)}% lower-bound win probability.`);
             return;
           }
           const buyReqId = demoRequestIdRef.current++;
-          demoOrderRequestsRef.current.set(buyReqId, { ...request, kind: 'buy', proposalId, askPrice });
+          demoOrderRequestsRef.current.set(buyReqId, { ...request, kind: 'buy', proposalId, askPrice, proposalSubscriptionId });
           armDemoOrderTimeout(buyReqId, 'buy', 15000);
           try {
             socket.send(JSON.stringify({ buy: proposalId, price: askPrice, req_id: buyReqId }));
             setDemoTradeMessage('Fresh quote received. Submitting demo purchase…');
           } catch {
+            forgetProposal();
             clearDemoOrderTimeout(buyReqId);
             demoOrderRequestsRef.current.delete(buyReqId);
             demoAutoTradingRef.current = false;
@@ -994,6 +1014,7 @@ function App() {
           if (!request || request.kind !== 'buy') return;
           clearDemoOrderTimeout(reqId);
           demoOrderRequestsRef.current.delete(reqId);
+          if (request.proposalSubscriptionId) { try { socket.send(JSON.stringify({ forget: request.proposalSubscriptionId, req_id: demoRequestIdRef.current++ })); } catch {} }
           const contractId = String(data.buy.contract_id || '');
           if (!/^\d+$/.test(contractId)) {
             setDemoTradeMessage('Deriv did not return a valid contract ID.');
@@ -1140,7 +1161,7 @@ function App() {
     armDemoOrderTimeout(reqId, 'proposal', 12000);
     const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : 'DIGITMATCH';
     try {
-      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), req_id: reqId }));
+      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), subscribe: 1, req_id: reqId }));
       setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
     } catch {
       clearDemoOrderTimeout(reqId);
@@ -1174,7 +1195,7 @@ function App() {
     if (!marketSymbol || !socket || socket.readyState !== WebSocket.OPEN) return;
     // One selected-market stream avoids exhausting Deriv's subscription capacity.
     socket.send(JSON.stringify({ forget_all: 'ticks' }));
-    socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 5000, end: 'latest', style: 'ticks', req_id: 1000 }));
+    socket.send(JSON.stringify({ ticks_history: marketSymbol, count: 5500, end: 'latest', style: 'ticks', req_id: 1000 }));
     socket.send(JSON.stringify({ ticks: marketSymbol, subscribe: 1, req_id: 2000 }));
   }
 
@@ -1309,6 +1330,19 @@ function App() {
           <button className="stop-button" onClick={() => setAnalysisRunning(false)} disabled={!analysisRunning}>STOP ANALYSIS</button>
         </div>
         <small className="lock-note">{analysisRunning ? activeStrategy + ' paper research running' : 'Research feed remains connected · start an engine to journal paper choices'}</small>
+      </section>
+      <section className="panel advanced-model-panel">
+        <div className="panel-title"><div><div className="section-heading">ADVANCED DIGIT MODEL · LIVE RESEARCH</div><p className="muted">The model compares three probability estimators on the latest chronological validation slice. It does not place orders.</p></div><span className="live-dot">MODEL ADVISORY</span></div>
+        {advancedForecast ? <>
+          <div className="candidate-row"><span>Selected forecast model</span><strong>{advancedForecast.model.replaceAll('_', ' ').toUpperCase()}</strong></div>
+          <div className="candidate-row"><span>Recent validation log loss · lower is better</span><strong>{advancedForecast.selectedMeanLogLoss.toFixed(4)} · {advancedForecast.validationObservations} outcomes</strong></div>
+          <div className="candidate-row"><span>Lowest-probability digit · Differs candidate</span><strong>{advancedForecast.probabilities.indexOf(Math.min(...advancedForecast.probabilities))}</strong></div>
+          <div className="candidate-row"><span>Highest-probability digit · Matches candidate</span><strong>{advancedForecast.probabilities.indexOf(Math.max(...advancedForecast.probabilities))}</strong></div>
+          <div className="candidate-row"><span>Even / Odd estimated probabilities</span><strong>{(advancedForecast.probabilities.filter((_, digit) => digit % 2 === 0).reduce((sum, p) => sum + p, 0) * 100).toFixed(2)}% / {(advancedForecast.probabilities.filter((_, digit) => digit % 2 === 1).reduce((sum, p) => sum + p, 0) * 100).toFixed(2)}%</strong></div>
+          <div className="digits advanced-digit-probabilities">{advancedForecast.probabilities.map((probability, digit) => <span key={digit} title={'Estimated probability for digit ' + digit}>{digit}<small>{(probability * 100).toFixed(1)}%</small></span>)}</div>
+          <div className="table-wrap"><table><thead><tr><th>Forecast candidate</th><th>Validation log loss</th><th>Brier score</th></tr></thead><tbody>{advancedForecast.scores.map(score => <tr key={score.model}><td>{score.model.replaceAll('_', ' ')}</td><td>{score.meanLogLoss?.toFixed(4) ?? '—'}</td><td>{score.meanBrierScore?.toFixed(4) ?? '—'}</td></tr>)}</tbody></table></div>
+        </> : <p className="muted">Collect at least {settings.windowSize + 20} ticks to compare the models for this analysis window.</p>}
+        <small className="muted">These are model-estimated next-digit probabilities, not calibrated guarantees. A low log-loss model on a short recent slice is not proof of positive trading expectancy. The demo execution path remains separately gated by walk-forward evidence and fresh payout quotes.</small>
       </section>
       <section className="panel demo-execution-panel">
         <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick DIFFERS demo contracts only. MATCHES remains research-only until it demonstrates a reliable out-of-sample edge. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>

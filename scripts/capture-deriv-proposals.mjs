@@ -106,7 +106,7 @@ try {
         } catch (error) {
           errors.push({ symbol, strategy: contract.strategy, contract_type: contract.contract_type, barrier: contract.barrier, stake, error: String(error.message || error) });
         }
-        await sleep(120);
+        await sleep(200);
       }
     }
   }

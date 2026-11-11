@@ -12,7 +12,11 @@ const FLUSH_COUNT = 500;
 const MAX_QUEUE = 25000;
 const MAX_SYMBOLS = Math.min(20, Math.max(1, Number(process.env.LOTUS_RESEARCH_MAX_SYMBOLS || 10)));
 const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
-const sql = neon(process.env.DATABASE_URL);
+const STAGING_DATABASE_URL = process.env.NEON_STAGING_DATABASE_URL;
+if (!STAGING_DATABASE_URL || STAGING_DATABASE_URL.length < 20) {
+  throw new Error("NEON_STAGING_DATABASE_URL is required; refusing to start the research collector without an explicit staging database.");
+}
+const sql = neon(STAGING_DATABASE_URL);
 const instance = randomUUID();
 let socket, reqId = 10, queue = [], symbols = new Map(), seen = new Map(), flushing = false;
 let lastTickAt = null, totalTicks = 0, reconnects = 0, stopping = false, flushTimer, heartbeatTimer, healthTimer;

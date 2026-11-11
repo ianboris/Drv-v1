@@ -114,7 +114,9 @@ function assertSameOrigin(request) {
 }
 
 function getSql() {
-  return neon(requiredEnv("DATABASE_URL", 20));
+  const url = process.env.NEON_STAGING_DATABASE_URL || requiredEnv("DATABASE_URL", 20);
+  if (!url || url.length < 20) throw new Error("Missing or weak environment variable: NEON_STAGING_DATABASE_URL or DATABASE_URL");
+  return neon(url);
 }
 
 function getSession(request) {
@@ -185,7 +187,7 @@ async function handle(request) {
 
   if (method === "GET" && path === "/health") {
     const checks = {
-      database_configured: Boolean(process.env.DATABASE_URL),
+      database_configured: Boolean(process.env.NEON_STAGING_DATABASE_URL || process.env.DATABASE_URL),
       login_configured: Boolean(process.env.DDPE_LOGIN_PASSWORD && process.env.DDPE_LOGIN_PASSWORD.length >= 16),
       session_secret_configured: Boolean(process.env.DDPE_SESSION_SECRET && process.env.DDPE_SESSION_SECRET.length >= 32),
       database_connected: false,
@@ -209,7 +211,7 @@ async function handle(request) {
         EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'ddpe_prediction_choices' AND column_name = 'choice_uid') AS choice_identity`;
       checks.schema_ready = Boolean(schema[0] && Object.values(schema[0]).every(Boolean));
     } catch (error) {
-      return json({ ok: false, checks, error: "Database connection failed. Check DATABASE_URL and Neon network access." }, 503);
+      return json({ ok: false, checks, error: "Database connection failed. Check the environment-specific Neon URL and database network access." }, 503);
     }
     const ready = checks.database_connected && checks.schema_ready && checks.login_configured && checks.session_secret_configured;
     return json({ ok: ready, checks }, ready ? 200 : 503);
