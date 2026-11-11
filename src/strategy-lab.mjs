@@ -191,12 +191,12 @@ export function evaluateSymbol(digits, symbol, payoutMap = null) {
 }
 
 export async function loadArchives(directory) {
-  const names = (await readdir(directory)).filter(n => /^ticks-\\d{4}-\\d{2}-\\d{2}\\.jsonl\\.gz$/.test(n)).sort();
+  const names = (await readdir(directory)).filter(n => /^ticks-\d{4}-\d{2}-\d{2}\.jsonl\.gz$/.test(n)).sort();
   const bySymbol = new Map();
   for (const name of names) {
     const bytes = await readFile(join(directory, name));
     const text = gunzipSync(bytes).toString('utf8');
-    for (const line of text.split('\\n')) {
+    for (const line of text.split('\n')) {
       if (!line) continue;
       let row;
       try { row = JSON.parse(line); } catch { continue; }
