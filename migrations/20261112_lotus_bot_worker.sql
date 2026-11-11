@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_events (
     'WORKER_STARTED', 'WORKER_STOP_REQUESTED', 'HEARTBEAT',
     'DECISION', 'ORDER_RESERVED', 'PROPOSAL_RECEIVED',
     'BUY_AUTHORIZED', 'BUY_SENT', 'BUY_CONFIRMED', 'BUY_UNKNOWN',
-    'CONTRACT_SETTLED', 'ORDER_RELEASED', 'RECONCILED', 'CORRECTION',
+    'CONTRACT_SETTLED', 'ORDER_RELEASED', 'RECONCILED', 'RECONCILIATION_REQUESTED', 'CORRECTION',
     'RISK_STOP', 'WORKER_ERROR', 'PLUMBING_CAP_REACHED'
   )),
   order_uid text,
@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_events (
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE public.ddpe_daily_risk
+  ADD COLUMN IF NOT EXISTS worker_epoch integer NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS ddpe_bot_events_owner_created_idx
   ON public.ddpe_bot_events (owner_id, created_at DESC);
