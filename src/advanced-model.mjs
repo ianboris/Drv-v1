@@ -184,7 +184,7 @@ export function evaluateAdvancedModel(digits, symbol, payoutMap, { currency = 'U
     if (!selectedModel) continue;
     for (const stake of stakes) {
       const validation = simulateSegment(digits, warmupEnd, validationEnd, symbol, windowSize, selectedModel, stake, payoutMap, normalizedCurrency, maxQuoteAgeMs);
-      const holdout = simulateSegment(digits, validationEnd, n, symbol, windowSize, selectedModel, stake, payoutMap, normalizedCurrency);
+      const holdout = simulateSegment(digits, validationEnd, n, symbol, windowSize, selectedModel, stake, payoutMap, normalizedCurrency, maxQuoteAgeMs);
       results.push({
         symbol, currency: normalizedCurrency, windowSize, stake,
         selectedModel, modelSelectionMetric: 'validation mean multiclass log loss',
