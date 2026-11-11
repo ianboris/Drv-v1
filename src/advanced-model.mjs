@@ -189,14 +189,13 @@ export function evaluateAdvancedModel(digits, symbol, payoutMap, { currency = 'U
         validationModelScores: modelScores,
         validation, holdout,
         preliminaryScreenPass: validation.trades >= 100 && validation.scenarioNetPnl > 0 &&
-          holdout.trades >= 100 && holdout.scenarioNetPnl > 0 &&
-          holdout.scenarioNetPerTrade > 0,
+          validation.scenarioNetPerTrade > 0,
       });
     }
   }
   results.sort((a, b) => {
     if (a.preliminaryScreenPass !== b.preliminaryScreenPass) return a.preliminaryScreenPass ? -1 : 1;
-    return (b.holdout.scenarioNetPerTrade ?? -Infinity) - (a.holdout.scenarioNetPerTrade ?? -Infinity);
+    return (b.validation.scenarioNetPerTrade ?? -Infinity) - (a.validation.scenarioNetPerTrade ?? -Infinity);
   });
   return {
     symbol, currency: normalizedCurrency, ticks: n, warmupEnd, validationEnd,
