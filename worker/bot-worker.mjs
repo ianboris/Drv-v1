@@ -121,6 +121,15 @@ async function fencedEvent(epoch, eventType, orderUid = null, payload = {}, cont
     RETURNING event_uid`;
   if (rows.length !== 1) throw new Error("STALE_WORKER_EPOCH_EVENT_REJECTED");
 }
+async function ensureLease(epoch, force = false) {
+  // The database lease lasts 20 seconds. Renew every 8 seconds so transient
+  // Deriv requests cannot let a healthy worker's lease expire.
+  if (!force && Date.now() - lastLeaseRenewAt < 8000) return true;
+  const claimed = await claimWorkerLease(sql, epoch, INSTANCE_ID);
+  if (claimed) lastLeaseRenewAt = Date.now();
+  return claimed;
+}
+
 async function heartbeat(epoch) {
   if (Date.now() - lastHeartbeatAt < 10000) return;
   await fencedEvent(epoch, "HEARTBEAT");
