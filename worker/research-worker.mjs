@@ -79,18 +79,42 @@ async function commitBatch(batch) {
       ON CONFLICT (batch_id) DO NOTHING
       RETURNING batch_id
     ),
-    daily_input AS (
-      SELECT * FROM jsonb_to_recordset(${JSON.stringify(groups)}::jsonb) AS x(
-        day date, symbol text, tick_count bigint, digit_counts jsonb,
-        first_tick_epoch bigint, last_tick_epoch bigint
+    tick_input AS (
+      SELECT * FROM jsonb_to_recordset(${JSON.stringify(batch.ticks)}::jsonb) AS x(
+        symbol text, epoch bigint, digit integer, tick_uid text
       )
+    ),
+    inserted_ticks AS (
+      INSERT INTO public.ddpe_research_tick_ids (symbol, tick_uid)
+      SELECT i.symbol, i.tick_uid FROM tick_input i CROSS JOIN accepted
+      ON CONFLICT (symbol, tick_uid) DO NOTHING
+      RETURNING symbol, tick_uid
+    ),
+    accepted_daily AS (
+      SELECT (to_timestamp(i.epoch) AT TIME ZONE 'UTC')::date AS day,
+             i.symbol, i.epoch, i.digit
+      FROM tick_input i
+      JOIN inserted_ticks n USING (symbol, tick_uid)
+    ),
+    daily_input AS (
+      SELECT day, symbol, COUNT(*) AS tick_count,
+        jsonb_build_array(
+          COUNT(*) FILTER (WHERE digit=0), COUNT(*) FILTER (WHERE digit=1),
+          COUNT(*) FILTER (WHERE digit=2), COUNT(*) FILTER (WHERE digit=3),
+          COUNT(*) FILTER (WHERE digit=4), COUNT(*) FILTER (WHERE digit=5),
+          COUNT(*) FILTER (WHERE digit=6), COUNT(*) FILTER (WHERE digit=7),
+          COUNT(*) FILTER (WHERE digit=8), COUNT(*) FILTER (WHERE digit=9)
+        ) AS digit_counts,
+        MIN(epoch) AS first_tick_epoch, MAX(epoch) AS last_tick_epoch
+      FROM accepted_daily
+      GROUP BY day, symbol
     ),
     daily_upsert AS (
       INSERT INTO public.ddpe_research_daily
         (owner_id, trading_day, symbol, tick_count, digit_counts, first_tick_epoch, last_tick_epoch, updated_at)
       SELECT ${OWNER}, d.day, d.symbol, d.tick_count, d.digit_counts,
              d.first_tick_epoch, d.last_tick_epoch, NOW()
-      FROM daily_input d CROSS JOIN accepted
+      FROM daily_input d
       ON CONFLICT (owner_id, trading_day, symbol) DO UPDATE SET
         tick_count = public.ddpe_research_daily.tick_count + EXCLUDED.tick_count,
         digit_counts = (
