@@ -5,7 +5,7 @@ import { claimWorkerLease, reserveOrder } from "../worker/control.mjs";
 function mockSql(control) {
   return async (strings, ...values) => {
     const query = strings.join(" ");
-    if (query.includes("worker_instance_id =")) {
+    if (query.includes("worker_lease_expires_at = NOW()")) {
       const [instanceId, epoch] = values;
       if (control.workerEpoch !== epoch) return [];
       const expired = !control.leaseUntil || control.leaseUntil <= Date.now();
