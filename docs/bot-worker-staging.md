@@ -36,10 +36,18 @@ Authenticated app session:
 The worker itself is a separate persistent process:
 `node worker/bot-worker.mjs`.
 
-Starting increments `worker_epoch`. Stop sets the durable stop flag but does
-not fence the current process, because it may still need to finish monitoring
-an accepted contract. A later start increments the epoch and is refused while
-an order or unknown buy remains unresolved.
+Starting increments `worker_epoch` and clears the previous process lease. The
+worker then atomically claims a 20-second renewable lease with a unique process
+instance ID. Only that instance can write control state or worker journal rows
+for the epoch; a second process cannot acquire the active lease. Expired leases
+can be taken over after a crash, and the database rejects writes from the
+previous instance even if it resumes later.
+
+Stop sets the durable stop flag but does not fence the current process, because
+it may still need to finish monitoring an accepted contract. A later start
+increments the epoch and is refused while an order or unknown buy remains
+unresolved. The 10-order plumbing cap and consecutive-loss count are preserved
+across worker restarts; restarting cannot reset either limit.
 
 ## Order and safety semantics
 
