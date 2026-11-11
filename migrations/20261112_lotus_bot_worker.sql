@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_settlements (
 );
 ALTER TABLE public.ddpe_bot_settlements ADD COLUMN IF NOT EXISTS worker_instance_id text;
 
+DROP FUNCTION IF EXISTS public.ddpe_apply_bot_settlement(text, integer, text, bigint, numeric, text);
+
 CREATE OR REPLACE FUNCTION public.ddpe_apply_bot_settlement(
   p_owner_id text,
   p_worker_epoch integer,
