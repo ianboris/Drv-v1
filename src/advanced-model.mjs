@@ -68,7 +68,7 @@ export function logLoss(probabilities, actualDigit) {
   return -Math.log(Math.max(1e-12, probabilities[actualDigit]));
 }
 
-function candidateContracts(probabilities, symbol, stake, payoutMap, currency) {
+function candidateContracts(probabilities, symbol, stake, payoutMap, currency, now, maxQuoteAgeMs) {
   if (!payoutMap) return [];
   const candidates = [];
   const parityProbabilities = {
@@ -80,7 +80,9 @@ function candidateContracts(probabilities, symbol, stake, payoutMap, currency) {
     for (const barrier of barriers) {
       const key = [symbol, contract, barrier == null ? '-' : barrier, stake].join('|');
       const quote = payoutMap.get(key);
-      if (!quote || String(quote.currency || '').toUpperCase() !== currency) continue;
+      if (!quote || String(quote.currency || '').toUpperCase() !== currency ||
+          !Number.isFinite(quote.capturedAtMs) || quote.capturedAtMs <= 0 ||
+          now - quote.capturedAtMs > maxQuoteAgeMs || quote.capturedAtMs > now + 60000) continue;
       const pWin = contract === 'DIFFERS'
         ? 1 - probabilities[Number(barrier)]
         : contract === 'MATCHES'
@@ -101,7 +103,7 @@ function candidateContracts(probabilities, symbol, stake, payoutMap, currency) {
   return candidates.sort((a, b) => b.expectedNet - a.expectedNet);
 }
 
-function simulateSegment(digits, start, end, symbol, windowSize, model, stake, payoutMap, currency) {
+function simulateSegment(digits, start, end, symbol, windowSize, model, stake, payoutMap, currency, maxQuoteAgeMs) {
   let trades = 0, wins = 0, losses = 0, skipped = 0;
   let pnl = 0, peak = 0, maxDrawdown = 0, stopHit = false, tradesUntilStop = null;
   let maxLossStreak = 0, lossStreak = 0, totalExpectedNet = 0;
@@ -111,7 +113,7 @@ function simulateSegment(digits, start, end, symbol, windowSize, model, stake, p
     const history = digits.slice(Math.max(0, i - windowSize), i);
     if (history.length < windowSize) { skipped++; continue; }
     const probabilities = forecastDigitProbabilities(history, windowSize, model);
-    const candidates = candidateContracts(probabilities, symbol, stake, payoutMap, currency);
+    const candidates = candidateContracts(probabilities, symbol, stake, payoutMap, currency, Date.now(), maxQuoteAgeMs);
     const selected = candidates[0];
     if (!selected || selected.expectedNet <= 0) { skipped++; continue; }
     trades++;
@@ -166,7 +168,7 @@ function scoreForecastModel(digits, start, end, windowSize, model) {
   return { model, observations: count, meanLogLoss: count ? loss / count : null, meanBrierScore: count ? brier / count : null };
 }
 
-export function evaluateAdvancedModel(digits, symbol, payoutMap, { currency = 'USD', stakes = [1, 2, 3, 5], windows = [50, 100, 250, 500, 1000, 2500, 5000] } = {}) {
+export function evaluateAdvancedModel(digits, symbol, payoutMap, { currency = 'USD', stakes = [1, 2, 3, 5], windows = [50, 100, 250, 500, 1000, 2500, 5000], maxQuoteAgeMs = 15 * 60 * 1000 } = {}) {
   assertDigits(digits);
   const normalizedCurrency = String(currency).toUpperCase();
   if (!/^[A-Z0-9]{2,20}$/.test(normalizedCurrency)) throw new Error('A valid account currency is required.');
@@ -181,7 +183,7 @@ export function evaluateAdvancedModel(digits, symbol, payoutMap, { currency = 'U
     const selectedModel = rankedModels[0]?.model || null;
     if (!selectedModel) continue;
     for (const stake of stakes) {
-      const validation = simulateSegment(digits, warmupEnd, validationEnd, symbol, windowSize, selectedModel, stake, payoutMap, normalizedCurrency);
+      const validation = simulateSegment(digits, warmupEnd, validationEnd, symbol, windowSize, selectedModel, stake, payoutMap, normalizedCurrency, maxQuoteAgeMs);
       const holdout = simulateSegment(digits, validationEnd, n, symbol, windowSize, selectedModel, stake, payoutMap, normalizedCurrency);
       results.push({
         symbol, currency: normalizedCurrency, windowSize, stake,
@@ -202,6 +204,7 @@ export function evaluateAdvancedModel(digits, symbol, payoutMap, { currency = 'U
     modelFamily: 'Bayesian-smoothed rolling, exponential-decay and first-order Markov predictive distributions',
     selectionRule: 'Select the forecast model by validation log loss; holdout is not used to choose the model. Contract choice maximizes payout-adjusted expected net return at each tick.',
     riskRule: 'One sequential one-tick position at a time; stop opening new positions once cumulative session P/L is at or below -10 account-currency units.',
+    quoteFreshnessRule: 'Only matching proposal snapshots captured within the last 15 minutes are eligible for scenario selection.',
     results,
   };
 }
