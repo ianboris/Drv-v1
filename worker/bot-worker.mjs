@@ -299,9 +299,30 @@ async function runOneCycle(socket, epoch, control, account) {
     if (!quote?.id || !Number.isFinite(Number(quote.ask_price)) || !Number.isFinite(Number(quote.payout))) {
       throw new Error("Deriv proposal response is incomplete.");
     }
+    const maxBuyPrice = Number(quote.ask_price);
+    const beforeBuyControl = await loadControl();
+    const beforeBuyDaily = await sql`SELECT realized_net_pl, locked FROM public.ddpe_daily_risk
+      WHERE owner_id = ${OWNER_ID} AND trading_day = CURRENT_DATE LIMIT 1`;
+    if (!beforeBuyControl || Number(beforeBuyControl.worker_epoch) !== epoch ||
+        beforeBuyControl.worker_instance_id !== INSTANCE_ID ||
+        beforeBuyControl.buy_unknown || beforeBuyControl.stop_requested) {
+      throw new Error("STOP_OR_FENCE_BLOCKED_BUY");
+    }
+    assertRiskAllowed({
+      stopRequested: beforeBuyControl.stop_requested, buyUnknown: beforeBuyControl.buy_unknown,
+      workerEpoch: epoch, currentEpoch: Number(beforeBuyControl.worker_epoch),
+      inFlightOrderUid: beforeBuyControl.in_flight_order_uid, orderUid,
+      balance, stake: maxBuyPrice, maxStakePct: Number(beforeBuyControl.max_stake_pct),
+      dailyNetPl: Number(beforeBuyDaily[0]?.realized_net_pl || 0),
+      dailyLossLimit: Number(beforeBuyControl.daily_loss_limit),
+      consecutiveLosses: Number(beforeBuyControl.consecutive_losses),
+      consecutiveLossLimit: Number(beforeBuyControl.consecutive_loss_limit),
+      mode: beforeBuyControl.mode, plumbingRemaining: Number(beforeBuyControl.plumbing_remaining),
+    });
+    if (beforeBuyDaily[0]?.locked) throw new Error("DAILY_LOSS_LIMIT_REACHED");
     await fencedEvent(epoch, "PROPOSAL_RECEIVED", orderUid, {
       proposalId: quote.id, askPrice: quote.ask_price, payout: quote.payout,
-      grossPayout: quote.payout, stake, barrier, symbol: control.symbol,
+      grossPayout: quote.payout, requestedStake: stake, maxBuyPrice, barrier, symbol: control.symbol,
     });
     if (!(await reserveOrder(sql, orderUid, epoch, INSTANCE_ID))) throw new Error("STOP_OR_FENCE_BLOCKED_BUY");
     const cap = await sql`UPDATE public.ddpe_bot_control
@@ -312,8 +333,8 @@ async function runOneCycle(socket, epoch, control, account) {
         AND buy_unknown = false AND mode = 'PLUMBING_TEST' AND plumbing_remaining > 0
       RETURNING plumbing_remaining`;
     if (cap.length !== 1) throw new Error("PLUMBING_TRADE_CAP_REACHED_OR_STOPPED");
-    await fencedEvent(epoch, "BUY_AUTHORIZED", orderUid, { stake, barrier });
-    await fencedEvent(epoch, "BUY_SENT", orderUid, { proposalId: quote.id, stake, symbol: control.symbol, barrier });
+    await fencedEvent(epoch, "BUY_AUTHORIZED", orderUid, { requestedStake: stake, maxBuyPrice, barrier });
+    await fencedEvent(epoch, "BUY_SENT", orderUid, { proposalId: quote.id, stake: maxBuyPrice, requestedStake: stake, symbol: control.symbol, barrier });
     buySent = true;
     let bought;
     try {
