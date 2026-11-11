@@ -370,8 +370,8 @@ async function handle(request) {
     const selected = accounts.find((account) => String(account.account_id || account.id || "") === accountId);
     if (!selected || !isDerivDemoAccount(selected)) return json({ error: "Only verified demo accounts can start the worker." }, 403);
     const rows = await sql`UPDATE public.ddpe_bot_control
-      SET worker_epoch = worker_epoch + 1, desired_running = true, stop_requested = false,
-          mode = 'PLUMBING_TEST', demo_account_id = ${accountId}, symbol = ${symbol},
+      SET worker_epoch = worker_epoch + 1, worker_instance_id = NULL, worker_lease_expires_at = NULL,
+          desired_running = true, stop_requested = false, mode = 'PLUMBING_TEST', demo_account_id = ${accountId}, symbol = ${symbol},
           daily_loss_limit = COALESCE((SELECT daily_loss_limit FROM public.ddpe_settings WHERE owner_id = ${OWNER_ID}), daily_loss_limit),
           last_error = NULL,
           updated_at = NOW()
@@ -404,7 +404,7 @@ async function handle(request) {
     const sql = getSql();
     const rows = await sql`SELECT worker_epoch, desired_running, stop_requested, mode, demo_account_id,
       symbol, in_flight_order_uid, buy_unknown, buy_unknown_order_uid,
-      reconciliation_requested, worker_heartbeat_at, daily_loss_limit,
+      reconciliation_requested, worker_heartbeat_at, worker_lease_expires_at, daily_loss_limit,
       max_stake_pct, consecutive_loss_limit, consecutive_losses,
       plumbing_remaining, last_error, updated_at
       FROM public.ddpe_bot_control WHERE owner_id = ${OWNER_ID} LIMIT 1`;
