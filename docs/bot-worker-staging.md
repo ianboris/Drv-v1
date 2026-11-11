@@ -33,6 +33,7 @@ Authenticated app session:
 - `POST /api/bot/stop`
 - `GET /api/bot/status`
 - `POST /api/bot/reconcile` — requests reconciliation; it does not retry a buy.
+- `POST /api/bot/reconcile/confirm-no-purchase` with `{ "confirm_no_purchase": true, "reason": "..." }` — operator-only release after independently reviewing Deriv's statement. It is enabled only when the latest statement reconciliation returned zero matches, at least 60 seconds have elapsed since BUY_SENT, the no-match event is at least 10 seconds old, and the worker lease has expired. The confirmation is appended as a RECONCILED event.
 
 The worker itself is a separate persistent process:
 `node worker/bot-worker.mjs`.
