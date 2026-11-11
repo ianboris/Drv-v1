@@ -37,7 +37,7 @@ test('session stop halts after two full $5 losses at the $10 limit', () => {
   for (let i = 7200; i < digits.length; i++) digits[i] = 1;
   const payouts = new Map([[
     'R_10|MATCHES|0|5',
-    { symbol: 'R_10', contractType: 'MATCHES', barrier: '0', stake: 5, askPrice: 5, payout: 100, currency: 'USD' }
+    { symbol: 'R_10', contractType: 'MATCHES', barrier: '0', stake: 5, askPrice: 5, payout: 100, currency: 'USD', capturedAtMs: Date.now() }
   ]]);
   const result = evaluateAdvancedModel(digits, 'R_10', payouts, { currency: 'USD', stakes: [5], windows: [50] });
   const row = result.results[0];
