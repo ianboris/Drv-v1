@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSignals, evaluateSymbol, parsePayoutSnapshots, wilsonInterval } from '../src/strategy-lab.mjs';
+import { buildSignals, evaluateSymbol, loadArchives, parsePayoutSnapshots, wilsonInterval } from '../src/strategy-lab.mjs';
+import { gzipSync } from 'node:zlib';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test('Wilson interval is bounded and contains the observed rate', () => {
   const ci = wilsonInterval(50, 100);
@@ -40,4 +44,22 @@ test('no payout snapshots means no monetary scenario P/L or profitability screen
   const digits = Array.from({ length: 12000 }, (_, i) => i % 10);
   const result = evaluateSymbol(digits, 'R_10');
   assert.ok(result.results.every(row => row.scenarioNetPnl === null && row.scenarioNetPerTrade === null && row.preliminaryScreenPass === false));
+});
+
+test('compressed daily archive loader parses JSONL and removes duplicate tick IDs', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lotus-archive-'));
+  try {
+    const rows = [
+      { symbol: 'R_10', epoch: 100, digit: 4, tick_uid: 'a' },
+      { symbol: 'R_10', epoch: 100, digit: 7, tick_uid: 'b' },
+      { symbol: 'R_10', epoch: 100, digit: 4, tick_uid: 'a' },
+      { symbol: 'R_10', epoch: 101, digit: 2, tick_uid: 'c' }
+    ];
+    const jsonl = rows.map(row => JSON.stringify(row)).join('\n') + '\n';
+    await writeFile(join(directory, 'ticks-2026-11-12.jsonl.gz'), gzipSync(jsonl));
+    const archives = await loadArchives(directory);
+    assert.deepEqual(archives.get('R_10'), [4, 7, 2]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
