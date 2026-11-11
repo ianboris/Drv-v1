@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_control (
   consecutive_loss_limit integer NOT NULL DEFAULT 3 CHECK (consecutive_loss_limit BETWEEN 1 AND 20),
   consecutive_losses integer NOT NULL DEFAULT 0 CHECK (consecutive_losses >= 0),
   plumbing_remaining integer NOT NULL DEFAULT 10 CHECK (plumbing_remaining BETWEEN 0 AND 10),
+  last_processed_tick_epoch bigint NOT NULL DEFAULT 0,
   last_error text,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK ((buy_unknown = false AND buy_unknown_order_uid IS NULL)
@@ -56,6 +57,93 @@ CREATE INDEX IF NOT EXISTS ddpe_bot_events_owner_created_idx
   ON public.ddpe_bot_events (owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ddpe_bot_events_order_idx
   ON public.ddpe_bot_events (order_uid, created_at);
+
+
+CREATE TABLE IF NOT EXISTS public.ddpe_bot_settlements (
+  contract_id bigint PRIMARY KEY,
+  order_uid text NOT NULL UNIQUE,
+  worker_epoch integer NOT NULL,
+  profit numeric(18,8) NOT NULL,
+  contract_status text NOT NULL CHECK (contract_status IN ('won', 'lost', 'sold', 'cancelled')),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION public.ddpe_apply_bot_settlement(
+  p_owner_id text,
+  p_worker_epoch integer,
+  p_order_uid text,
+  p_contract_id bigint,
+  p_profit numeric,
+  p_contract_status text
+) RETURNS boolean LANGUAGE plpgsql AS $
+DECLARE
+  v_mode text;
+  v_loss_limit numeric(18,8);
+  v_inserted integer;
+BEGIN
+  SELECT mode, daily_loss_limit INTO v_mode, v_loss_limit
+  FROM public.ddpe_bot_control
+  WHERE owner_id = p_owner_id AND worker_epoch = p_worker_epoch
+    AND in_flight_order_uid = p_order_uid AND buy_unknown = false
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'stale worker epoch or order slot mismatch'
+      USING ERRCODE = '40001';
+  END IF;
+
+  INSERT INTO public.ddpe_bot_settlements
+    (contract_id, order_uid, worker_epoch, profit, contract_status)
+  VALUES (p_contract_id, p_order_uid, p_worker_epoch, p_profit, p_contract_status)
+  ON CONFLICT DO NOTHING;
+
+  GET DIAGNOSTICS v_inserted = ROW_COUNT;
+  IF v_inserted = 0 THEN
+    RETURN false;
+  END IF;
+
+  INSERT INTO public.ddpe_daily_risk
+    (owner_id, trading_day, realized_net_pl, loss_limit, locked, lock_reason, worker_epoch, updated_at)
+  VALUES (p_owner_id, CURRENT_DATE, p_profit, v_loss_limit,
+    (p_profit <= -v_loss_limit),
+    CASE WHEN p_profit <= -v_loss_limit THEN 'daily_loss_limit' ELSE NULL END,
+    p_worker_epoch, NOW())
+  ON CONFLICT (owner_id, trading_day) DO UPDATE SET
+    realized_net_pl = public.ddpe_daily_risk.realized_net_pl + EXCLUDED.realized_net_pl,
+    loss_limit = EXCLUDED.loss_limit,
+    locked = (public.ddpe_daily_risk.realized_net_pl + EXCLUDED.realized_net_pl) <= -EXCLUDED.loss_limit,
+    lock_reason = CASE
+      WHEN (public.ddpe_daily_risk.realized_net_pl + EXCLUDED.realized_net_pl) <= -EXCLUDED.loss_limit
+      THEN 'daily_loss_limit' ELSE NULL END,
+    worker_epoch = EXCLUDED.worker_epoch,
+    updated_at = NOW();
+
+  INSERT INTO public.ddpe_bot_events
+    (event_uid, owner_id, worker_epoch, event_type, order_uid, deriv_contract_id, mode, payload)
+  VALUES (md5(clock_timestamp()::text || random()::text), p_owner_id, p_worker_epoch,
+    'CONTRACT_SETTLED', p_order_uid, p_contract_id, v_mode,
+    jsonb_build_object('profit', p_profit, 'status', p_contract_status));
+
+  UPDATE public.ddpe_bot_control
+  SET consecutive_losses = CASE WHEN p_profit < 0 THEN consecutive_losses + 1 ELSE 0 END,
+      in_flight_order_uid = NULL, updated_at = NOW()
+  WHERE owner_id = p_owner_id AND worker_epoch = p_worker_epoch
+    AND in_flight_order_uid = p_order_uid AND buy_unknown = false;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'worker epoch changed while applying settlement'
+      USING ERRCODE = '40001';
+  END IF;
+
+  INSERT INTO public.ddpe_bot_events
+    (event_uid, owner_id, worker_epoch, event_type, order_uid, deriv_contract_id, mode, payload)
+  VALUES (md5(clock_timestamp()::text || random()::text), p_owner_id, p_worker_epoch,
+    'ORDER_RELEASED', p_order_uid, p_contract_id, v_mode,
+    '{"reason":"settled"}'::jsonb);
+
+  RETURN true;
+END;
+$;
 
 CREATE OR REPLACE FUNCTION public.ddpe_bot_events_guard_insert()
 RETURNS trigger LANGUAGE plpgsql AS $$
