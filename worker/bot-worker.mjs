@@ -33,6 +33,8 @@ async function restJson(url, token, method = "GET") {
   return body;
 }
 
+class DerivApiError extends Error { constructor(message) { super(message); this.code = "DERIV_REJECTED"; } }
+
 class DerivSocket {
   constructor(url) { this.url = url; this.socket = null; this.nextId = 1; this.pending = new Map(); this.listeners = new Set(); }
   async connect() {
@@ -50,7 +52,7 @@ class DerivSocket {
       if (reqId && this.pending.has(reqId)) {
         const pending = this.pending.get(reqId);
         this.pending.delete(reqId); clearTimeout(pending.timer);
-        if (message.error) pending.reject(new Error(message.error.message || "Deriv request failed."));
+        if (message.error) pending.reject(new DerivApiError(message.error.message || "Deriv request rejected."));
         else pending.resolve(message);
       }
       for (const listener of this.listeners) listener(message);
@@ -87,8 +89,9 @@ async function getCredentials() {
   }
   return { token: decryptToken(row), accountId: row.selected_demo_account_id };
 }
-async function openDemoSocket(epoch) {
+async function openDemoSocket(epoch, expectedAccountId) {
   const { token, accountId } = await getCredentials();
+  if (expectedAccountId && accountId !== expectedAccountId) throw new Error("Connected Deriv account changed; refusing worker session.");
   const body = await restJson("https://api.derivws.com/trading/v1/options/accounts", token);
   const accounts = Array.isArray(body?.data) ? body.data : (body?.data?.accounts || []);
   const account = accounts.find((item) => String(item.account_id || item.id || "") === accountId);
@@ -182,7 +185,9 @@ async function findConfirmedContract(socket, epoch, orderUid) {
     const timeMatches = Number(tx.transaction_time) >= from && Number(tx.transaction_time) <= to;
     const description = `${tx.shortcode || ""} ${tx.longcode || ""}`;
     const symbolMatches = symbol && description.includes(symbol);
-    return tx.action_type === "buy" && amountMatches && timeMatches && symbolMatches && Number.isSafeInteger(Number(tx.contract_id));
+    const contractTypeMatches = description.includes("DIGITDIFF");
+    return tx.action_type === "buy" && amountMatches && timeMatches && symbolMatches &&
+      contractTypeMatches && Number.isSafeInteger(Number(tx.contract_id));
   });
   if (candidates.length !== 1) {
     throw new Error(`Deriv statement reconciliation is ambiguous (${candidates.length} matching buy rows); buy remains halted.`);
@@ -212,15 +217,27 @@ async function findConfirmedContract(socket, epoch, orderUid) {
   }
 }
 async function recoverOpenOrder(socket, epoch, orderUid) {
-  const events = await sql`SELECT deriv_contract_id FROM public.ddpe_bot_events
+  const events = await sql`SELECT event_type, deriv_contract_id FROM public.ddpe_bot_events
     WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
-      AND order_uid = ${orderUid} AND event_type = 'BUY_CONFIRMED'
+      AND order_uid = ${orderUid}
+      AND event_type IN ('BUY_CONFIRMED', 'RECONCILED')
+      AND deriv_contract_id IS NOT NULL
     ORDER BY id DESC LIMIT 1`;
   const contractId = Number(events[0]?.deriv_contract_id);
-  if (!Number.isSafeInteger(contractId) || contractId <= 0) {
-    throw new Error("An in-flight order has no confirmed contract ID; request manual reconciliation.");
+  if (Number.isSafeInteger(contractId) && contractId > 0) {
+    await monitorContract(socket, epoch, orderUid, contractId);
+    return;
   }
-  await monitorContract(socket, epoch, orderUid, contractId);
+  const sent = await sql`SELECT event_uid FROM public.ddpe_bot_events
+    WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+      AND order_uid = ${orderUid} AND event_type = 'BUY_SENT'
+    ORDER BY id DESC LIMIT 1`;
+  if (sent.length) {
+    await markBuyUnknown(orderUid, epoch, "Worker restarted after BUY_SENT but before a confirmed buy response.");
+    return;
+  }
+  await fencedEvent(epoch, "ORDER_RELEASED", orderUid, { reason: "restart_before_buy_sent" });
+  await releaseOrder(orderUid, epoch);
 }
 async function runOneCycle(socket, epoch, control, account) {
   if (!control.symbol || !/^[A-Za-z0-9_]{1,32}$/.test(control.symbol)) throw new Error("Worker symbol is not configured.");
@@ -269,7 +286,7 @@ async function runOneCycle(socket, epoch, control, account) {
     const proposal = await socket.request({
       proposal: 1, amount: stake, basis: "stake", contract_type: "DIGITDIFF",
       currency: account.currency, duration: 1, duration_unit: "t",
-      symbol: control.symbol, barrier: String(barrier),
+      underlying_symbol: control.symbol, barrier: String(barrier),
     });
     const quote = proposal.proposal;
     if (!quote?.id || !Number.isFinite(Number(quote.ask_price)) || !Number.isFinite(Number(quote.payout))) {
@@ -291,8 +308,26 @@ async function runOneCycle(socket, epoch, control, account) {
     await fencedEvent(epoch, "BUY_SENT", orderUid, { proposalId: quote.id, stake, symbol: control.symbol, barrier });
     buySent = true;
     let bought;
-    try { bought = await socket.request({ buy: quote.id, price: Number(quote.ask_price) }); }
-    catch (error) { await markBuyUnknown(orderUid, epoch, error.message); throw error; }
+    try {
+      // Unary proposal IDs are informational. The Deriv schema permits a
+      // parameterized buy (buy="1") with the proposal ask as the max price.
+      bought = await socket.request({
+        buy: "1", price: Number(quote.ask_price),
+        parameters: {
+          amount: stake, basis: "stake", contract_type: "DIGITDIFF",
+          currency: account.currency, duration: 1, duration_unit: "t",
+          underlying_symbol: control.symbol, barrier: String(barrier),
+        },
+      });
+    } catch (error) {
+      if (error?.code === "DERIV_REJECTED") {
+        buySent = false;
+        await fencedEvent(epoch, "WORKER_ERROR", orderUid, { kind: "BUY_REJECTED", error: error.message.slice(0, 250) });
+      } else {
+        await markBuyUnknown(orderUid, epoch, error.message);
+      }
+      throw error;
+    }
     const contractId = Number(bought.buy?.contract_id);
     if (!Number.isSafeInteger(contractId) || contractId <= 0) {
       await markBuyUnknown(orderUid, epoch, "Buy response did not include a valid contract_id.");
@@ -325,15 +360,23 @@ async function runWorker() {
       }
       if (control.buy_unknown) {
         if (control.reconciliation_requested) {
-          if (!socket) socket = (await openDemoSocket(epoch)).socket;
-          await findConfirmedContract(socket, epoch, control.buy_unknown_order_uid);
+          if (!socket) socket = (await openDemoSocket(epoch, control.demo_account_id)).socket;
+          try {
+            await findConfirmedContract(socket, epoch, control.buy_unknown_order_uid);
+          } catch (error) {
+            await sql`UPDATE public.ddpe_bot_control
+              SET reconciliation_requested = false, updated_at = NOW()
+              WHERE owner_id = ${OWNER_ID} AND worker_epoch = ${epoch}
+                AND buy_unknown = true AND buy_unknown_order_uid = ${control.buy_unknown_order_uid}`;
+            throw error;
+          }
         } else {
           await sleep(POLL_MS);
         }
         continue;
       }
       if (control.in_flight_order_uid) {
-        if (!socket) socket = (await openDemoSocket(epoch)).socket;
+        if (!socket) socket = (await openDemoSocket(epoch, control.demo_account_id)).socket;
         await recoverOpenOrder(socket, epoch, control.in_flight_order_uid);
         continue;
       }
@@ -341,7 +384,7 @@ async function runWorker() {
         await sleep(POLL_MS);
         continue;
       }
-      if (!socket) socket = (await openDemoSocket(epoch)).socket;
+      if (!socket) socket = (await openDemoSocket(epoch, control.demo_account_id)).socket;
       await heartbeat(epoch);
       const { token } = await getCredentials();
       const accountBody = await restJson("https://api.derivws.com/trading/v1/options/accounts", token);
