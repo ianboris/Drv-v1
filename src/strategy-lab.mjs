@@ -22,27 +22,51 @@ export function wilsonInterval(wins, total, z = 1.96) {
   return { lower: Math.max(0, center - margin), upper: Math.min(1, center + margin) };
 }
 
-function chooseByFrequency(counts, digits, mode) {
+function chooseByFrequency(counts, lastSeen, mode) {
   const target = mode === 'least' ? Math.min(...counts) : Math.max(...counts);
-  const tied = new Set(counts.map((n, i) => n === target ? i : -1).filter(i => i >= 0));
-  // Deterministic recency tie-break: most recently observed tied digit.
-  for (let i = digits.length - 1; i >= 0; i--) if (tied.has(digits[i])) return digits[i];
-  return 0;
+  let chosen = 0, latest = -1;
+  for (let digit = 0; digit < 10; digit++) {
+    if (counts[digit] === target && lastSeen[digit] > latest) {
+      chosen = digit;
+      latest = lastSeen[digit];
+    }
+  }
+  return chosen;
 }
 
-function signal(digits, index, windowSize, strategy) {
-  const prior = digits.slice(index - windowSize, index);
-  if (prior.length !== windowSize) return null;
-  if (strategy === 'EVEN' || strategy === 'ODD') {
-    const evens = prior.reduce((n, d) => n + (d % 2 === 0 ? 1 : 0), 0);
-    const share = strategy === 'EVEN' ? evens / windowSize : (windowSize - evens) / windowSize;
-    // Fixed 55% directional filter; parity contracts are not entered without it.
-    if (share < MIN_PARITY_EDGE) return null;
-    return { barrier: null };
-  }
+function buildSignals(digits, windowSize, strategy) {
+  const signals = Array(digits.length).fill(null);
+  if (digits.length <= windowSize) return signals;
   const counts = Array(10).fill(0);
-  for (const digit of prior) counts[digit]++;
-  return { barrier: chooseByFrequency(counts, prior, strategy === 'DIFFERS' ? 'least' : 'most') };
+  const lastSeen = Array(10).fill(-1);
+  let evens = 0;
+  for (let i = 0; i < windowSize; i++) {
+    const digit = digits[i];
+    counts[digit]++;
+    lastSeen[digit] = i;
+    if (digit % 2 === 0) evens++;
+  }
+  for (let i = windowSize; i < digits.length; i++) {
+    if (strategy === 'EVEN' || strategy === 'ODD') {
+      const share = strategy === 'EVEN' ? evens / windowSize : (windowSize - evens) / windowSize;
+      // Fixed 55% directional filter; parity contracts are not entered without it.
+      if (share >= MIN_PARITY_EDGE) signals[i] = { barrier: null };
+    } else {
+      signals[i] = {
+        barrier: chooseByFrequency(counts, lastSeen, strategy === 'DIFFERS' ? 'least' : 'most'),
+      };
+    }
+    const outgoing = digits[i - windowSize];
+    counts[outgoing]--;
+    if (outgoing % 2 === 0) evens--;
+    const incoming = digits[i];
+    counts[incoming]++;
+    lastSeen[incoming] = i;
+    if (incoming % 2 === 0) evens++;
+    // lastSeen entries outside the rolling window cannot win a tie: every
+    // digit still present has a more recent index than any expired occurrence.
+  }
+  return signals;
 }
 
 function outcome(digit, strategy, target) {
@@ -79,13 +103,13 @@ function payoutFor(map, symbol, strategy, barrier, stake) {
   return map.get([symbol, strategy, barrier == null ? '-' : String(barrier), stake].join('|')) || null;
 }
 
-function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, payoutMap) {
+function scoreRange(digits, signalsByIndex, start, end, symbol, strategy, windowSize, stake, payoutMap) {
   let signals = 0, trades = 0, wins = 0, losses = 0, skipped = 0, lossStreak = 0, maxLossStreak = 0;
   let scenarioPnl = 0, peak = 0, maxDrawdown = 0, stopHit = false, stopAt = null;
   let quoteMissing = 0, maxBreakEven = 0, minCapturedAt = Infinity, maxCapturedAt = 0, grossPayoutSum = 0;
   const currencies = new Set();
   for (let i = Math.max(start, windowSize); i < end; i++) {
-    const pick = signal(digits, i, windowSize, strategy);
+    const pick = signalsByIndex[i];
     if (!pick) { skipped++; continue; }
     signals++;
     const quote = payoutFor(payoutMap, symbol, strategy, pick.barrier, stake);
@@ -143,11 +167,14 @@ export function evaluateSymbol(digits, symbol, payoutMap = null) {
   const trainEnd = Math.floor(n * 0.60);
   const validationEnd = Math.floor(n * 0.80);
   const results = [];
-  for (const strategy of STRATEGIES) for (const windowSize of WINDOWS) for (const stake of STAKES) {
+  for (const strategy of STRATEGIES) for (const windowSize of WINDOWS) {
     if (trainEnd < windowSize + 100 || validationEnd <= trainEnd || n <= validationEnd) continue;
-    const validation = scoreRange(digits, trainEnd, validationEnd, symbol, strategy, windowSize, stake, payoutMap);
-    const holdout = scoreRange(digits, validationEnd, n, symbol, strategy, windowSize, stake, payoutMap);
+    const signalsByIndex = buildSignals(digits, windowSize, strategy);
+    for (const stake of STAKES) {
+    const validation = scoreRange(digits, signalsByIndex, trainEnd, validationEnd, symbol, strategy, windowSize, stake, payoutMap);
+    const holdout = scoreRange(digits, signalsByIndex, validationEnd, n, symbol, strategy, windowSize, stake, payoutMap);
     results.push({ ...validation, split: 'validation', holdout });
+    }
   }
   // Ranking uses validation only. The final 20% holdout is never used to select.
   results.sort((a, b) => {
