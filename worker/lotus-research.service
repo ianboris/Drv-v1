@@ -1,0 +1,30 @@
+[Unit]
+Description=Lotus continuous Deriv public-market research collector
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=lotus
+Group=lotus
+WorkingDirectory=/opt/lotus
+EnvironmentFile=/etc/lotus/worker.env
+Environment=LOTUS_ARCHIVE_DIR=/var/lib/lotus/research
+Environment=LOTUS_ARCHIVE_RETENTION_DAYS=90
+ExecStart=/usr/bin/node /opt/lotus/worker/research-worker.mjs
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/lotus/research
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
