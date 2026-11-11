@@ -246,6 +246,13 @@ async function connect() {
     } else if (message.msg_type === "tick" && message.tick) {
       const symbol = String(message.tick.symbol || "");
       if (symbols.has(symbol)) {
+        for (const [requestId, pendingSymbol] of pendingSubscriptions) {
+          if (pendingSymbol === symbol) {
+            console.log(`[research] subscription confirmed by live tick: ${symbol} (req_id=${requestId})`);
+            pendingSubscriptions.delete(requestId);
+            break;
+          }
+        }
         try { acceptTick(message.tick); }
         catch (error) { console.error("[research] queue:", error.message); socket.close(); }
       } else if (symbol && !unexpectedTickSymbols.has(symbol)) {
