@@ -9,7 +9,7 @@ import { digitFromQuote, normalizePipSize } from './market-data.mjs';
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
 const DERIV_WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
 type Tick = { id: string; symbol: string; quote: number; epoch: number; source: 'history' | 'live'; pipSize?: number; lastDigit?: number };
-type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number };
+type ActiveSymbol = { underlying_symbol: string; underlying_symbol_name?: string; pip_size?: number; market?: string };
 type Settings = { stake: number; dailyLossLimit: number; takeProfitLimit: number; windowSize: number };
 type ProposalQuote = { barrier: number; askPrice: number; payout: number; quotedAt: number };
 type ChoiceAggregate = { symbol: string; barrier: number; total: number; wins: number };
@@ -335,7 +335,7 @@ function App() {
             return;
           }
           if (response.msg_type === 'active_symbols') {
-            const list: ActiveSymbol[] = response.active_symbols || [];
+            const list: ActiveSymbol[] = (response.active_symbols || []).filter((item: ActiveSymbol) => item.market === 'synthetic_index' && !/boom|crash/i.test(`${item.underlying_symbol} ${item.underlying_symbol_name || ''}`));
             setSymbols(list);
             // Cache symbol precision, but keep exactly one live tick subscription.
             // Subscribing to every returned market exhausted Deriv's subscription capacity.
