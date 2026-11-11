@@ -145,6 +145,38 @@ BEGIN
 END;
 $;
 
+
+CREATE OR REPLACE FUNCTION public.ddpe_bot_settlements_guard_insert()
+RETURNS trigger LANGUAGE plpgsql AS $
+DECLARE current_epoch integer;
+BEGIN
+  SELECT worker_epoch INTO current_epoch FROM public.ddpe_bot_control
+  WHERE owner_id = 'primary' FOR SHARE;
+  IF current_epoch IS NULL OR NEW.worker_epoch <> current_epoch THEN
+    RAISE EXCEPTION 'stale worker epoch for settlement' USING ERRCODE = '40001';
+  END IF;
+  RETURN NEW;
+END;
+$;
+
+CREATE OR REPLACE FUNCTION public.ddpe_bot_settlements_append_only()
+RETURNS trigger LANGUAGE plpgsql AS $
+BEGIN
+  RAISE EXCEPTION 'ddpe_bot_settlements is append-only'
+    USING ERRCODE = '55000';
+END;
+$;
+
+DROP TRIGGER IF EXISTS ddpe_bot_settlements_epoch_guard ON public.ddpe_bot_settlements;
+CREATE TRIGGER ddpe_bot_settlements_epoch_guard
+BEFORE INSERT ON public.ddpe_bot_settlements
+FOR EACH ROW EXECUTE FUNCTION public.ddpe_bot_settlements_guard_insert();
+
+DROP TRIGGER IF EXISTS ddpe_bot_settlements_no_mutation ON public.ddpe_bot_settlements;
+CREATE TRIGGER ddpe_bot_settlements_no_mutation
+BEFORE UPDATE OR DELETE ON public.ddpe_bot_settlements
+FOR EACH ROW EXECUTE FUNCTION public.ddpe_bot_settlements_append_only();
+
 CREATE OR REPLACE FUNCTION public.ddpe_bot_events_guard_insert()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE current_epoch integer;
