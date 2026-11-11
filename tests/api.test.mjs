@@ -195,3 +195,36 @@ test("Deriv OAuth callback rejects a missing code and state without exposing cre
   assert.equal(response.status, 303);
   assert.equal(response.headers.get("location"), "https://example.test/?deriv_error=invalid_callback");
 });
+
+test("bot start refuses every environment except explicit staging plumbing mode", async () => {
+  const old = {
+    secret: process.env.DDPE_SESSION_SECRET,
+    environment: process.env.BOT_ENVIRONMENT,
+    mode: process.env.BOT_MODE,
+  };
+  process.env.DDPE_SESSION_SECRET = "s".repeat(40);
+  process.env.BOT_ENVIRONMENT = "production";
+  process.env.BOT_MODE = "plumbing_test";
+  try {
+    const response = await api(new Request("https://example.test/api/bot/start", {
+      method: "POST",
+      headers: {
+        origin: "https://example.test",
+        "content-type": "application/json",
+        cookie: "ddpe_session=" + signedSession(process.env.DDPE_SESSION_SECRET),
+      },
+      body: JSON.stringify({ account_id: "VRTC123456", symbol: "R_10" }),
+    }));
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /restricted to/);
+  } finally {
+    for (const [key, value] of Object.entries({
+      DDPE_SESSION_SECRET: old.secret,
+      BOT_ENVIRONMENT: old.environment,
+      BOT_MODE: old.mode,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
