@@ -1,8 +1,6 @@
 import { neon } from "@neondatabase/serverless";
-import { appendFile, mkdir, readdir, stat, unlink } from "node:fs/promises";
-import { createWriteStream } from "node:fs";
+import { appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
-import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { digitFromQuote, normalizePipSize } from "../src/market-data.mjs";
 
@@ -21,7 +19,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const utcDay = epoch => new Date(epoch * 1000).toISOString().slice(0, 10);
 function send(payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Research WebSocket is not open");
-  socket.send(JSON.stringify({ ...payload, req_id: reqId++ }));
+  socket.send(JSON.stringify({ ...payload, req_id: payload.req_id ?? reqId++ }));
 }
 function remember(key) {
   if (seen.has(key)) return false;
@@ -76,13 +74,15 @@ async function persistBatch(batch) {
 async function flush() {
   if (flushing || !queue.length) return;
   flushing = true;
+  let batch = [];
   try {
     while (queue.length) {
-      const batch = queue.splice(0, FLUSH_COUNT);
+      batch = queue.splice(0, FLUSH_COUNT);
       await persistBatch(batch);
+      batch = [];
     }
   } catch (error) {
-    // Restore the batch to the front so a transient DB/disk error is visible and retryable.
+    if (batch.length) queue.unshift(...batch);
     throw error;
   } finally { flushing = false; }
 }
@@ -162,6 +162,7 @@ async function pruneArchives() {
 }
 async function main() {
   await mkdir(ARCHIVE_DIR, { recursive: true, mode: 0o700 });
+  await pruneArchives();
   flushTimer = setInterval(() => { flush().catch(error => console.error("[research] flush failed", error)); }, 5000);
   while (!stopping) {
     try {
