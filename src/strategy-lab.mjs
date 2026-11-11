@@ -19,7 +19,7 @@ export function wilsonInterval(wins, total, z = 1.96) {
 function chooseByFrequency(counts, digits, mode) {
   const target = mode === 'least' ? Math.min(...counts) : Math.max(...counts);
   const tied = new Set(counts.map((n, i) => n === target ? i : -1).filter(i => i >= 0));
-  // Deterministic recency tie-break: the most recently observed tied digit.
+  // Deterministic recency tie-break: most recently observed tied digit.
   for (let i = digits.length - 1; i >= 0; i--) if (tied.has(digits[i])) return digits[i];
   return 0;
 }
@@ -30,10 +30,9 @@ function signal(digits, index, windowSize, strategy) {
   if (strategy === 'EVEN' || strategy === 'ODD') {
     const evens = prior.reduce((n, d) => n + (d % 2 === 0 ? 1 : 0), 0);
     const share = strategy === 'EVEN' ? evens / windowSize : (windowSize - evens) / windowSize;
-    // Only enter parity contracts when the rolling window shows a directional
-    // imbalance; otherwise no trade. The 55% threshold is fixed before testing.
+    // Fixed 55% directional filter; parity contracts are not entered without it.
     if (share < MIN_PARITY_EDGE) return null;
-    return { barrier: null, expected: strategy === 'EVEN' ? 0 : 1 };
+    return { barrier: null };
   }
   const counts = Array(10).fill(0);
   for (const digit of prior) counts[digit]++;
@@ -72,53 +71,56 @@ function payoutFor(map, symbol, strategy, barrier, stake) {
 }
 
 function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, payoutMap) {
-  let trades = 0, wins = 0, losses = 0, skipped = 0, lossStreak = 0, maxLossStreak = 0;
-  let pnl = 0, maxDrawdown = 0, peak = 0, stopHit = false, stopAt = null;
-  let quoteMissing = 0, assumedPnl = null, breakEven = null, quoteCapturedAt = null;
+  let signals = 0, trades = 0, wins = 0, losses = 0, skipped = 0, lossStreak = 0, maxLossStreak = 0;
+  let scenarioPnl = 0, peak = 0, maxDrawdown = 0, stopHit = false, stopAt = null;
+  let quoteMissing = 0, maxBreakEven = 0, minCapturedAt = Infinity, maxCapturedAt = 0, grossPayoutSum = 0;
   for (let i = Math.max(start, windowSize); i < end; i++) {
     const pick = signal(digits, i, windowSize, strategy);
     if (!pick) { skipped++; continue; }
-    const won = outcome(digits[i], strategy, pick.barrier);
+    signals++;
     const quote = payoutFor(payoutMap, symbol, strategy, pick.barrier, stake);
-    if (payoutMap && !quote) { quoteMissing++; continue; }
+    if (payoutMap && !quote) { quoteMissing++; skipped++; continue; }
+    if (stopHit) { skipped++; continue; }
+    const won = outcome(digits[i], strategy, pick.barrier);
     trades++;
     if (won) { wins++; lossStreak = 0; }
     else { losses++; lossStreak++; maxLossStreak = Math.max(maxLossStreak, lossStreak); }
     if (quote) {
-      const delta = won ? quote.payout - stake : -stake;
-      pnl += delta;
-      peak = Math.max(peak, pnl);
-      maxDrawdown = Math.max(maxDrawdown, peak - pnl);
-      breakEven = stake / quote.payout;
-      quoteCapturedAt = quote.capturedAt || null;
-      if (!stopHit && pnl <= -SESSION_STOP_LOSS) { stopHit = true; stopAt = trades; }
+      const breakEven = stake / quote.payout;
+      maxBreakEven = Math.max(maxBreakEven, breakEven);
+      grossPayoutSum += quote.payout;
+      if (quote.capturedAtMs) {
+        minCapturedAt = Math.min(minCapturedAt, quote.capturedAtMs);
+        maxCapturedAt = Math.max(maxCapturedAt, quote.capturedAtMs);
+      }
+      scenarioPnl += won ? quote.payout - stake : -stake;
+      peak = Math.max(peak, scenarioPnl);
+      maxDrawdown = Math.max(maxDrawdown, peak - scenarioPnl);
+      if (scenarioPnl <= -SESSION_STOP_LOSS) { stopHit = true; stopAt = trades; }
     }
   }
   const ci = wilsonInterval(wins, trades);
   const baseline = strategy === 'DIFFERS' ? 0.9 : strategy === 'MATCHES' ? 0.1 : 0.5;
-  const payoutPresent = !!payoutMap && quoteMissing === 0 && trades > 0;
-  const evPerTrade = payoutPresent ? pnl / trades : null;
-  const evPerStake = payoutPresent ? evPerTrade / stake : null;
-  const expectedValueUsingObservedRate = payoutPresent ? (wins / trades) * (payoutFor(payoutMap, symbol, strategy,
-    strategy === 'DIFFERS' || strategy === 'MATCHES' ? null : null, stake)?.payout || 0) - stake : null;
+  const quoteCoverage = signals ? (signals - quoteMissing) / signals : null;
+  const payoutComplete = !!payoutMap && quoteMissing === 0 && trades > 0;
+  const scenarioNetPerTrade = payoutComplete ? scenarioPnl / trades : null;
   return {
     symbol, strategy, windowSize, stake, startIndex: start, endIndex: end,
-    trades, wins, losses, skipped, quoteMissing, winRate: trades ? wins / trades : null,
-    ci95Lower: ci.lower, ci95Upper: ci.upper, baseline,
-    maxConsecutiveLosses: maxLossStreak,
-    payoutCoverage: payoutMap ? (trades + quoteMissing ? trades / (trades + quoteMissing) : 0) : null,
-    payoutAssumption: payoutPresent ? 'Constant captured proposal payout applied to historical outcomes; not historical realised P/L.' : null,
-    currency: payoutPresent ? (payoutFor(payoutMap, symbol, strategy, null, stake)?.currency || null) : null,
-    payoutCapturedAt: quoteCapturedAt,
-    breakEvenWinProbability: breakEven,
-    projectedNetPnl: payoutPresent ? pnl : null,
-    projectedEvPerTrade: evPerTrade,
-    projectedEvPerStake: evPerStake,
-    maxDrawdown: payoutPresent ? maxDrawdown : null,
-    sessionStopHit: payoutPresent ? stopHit : null,
-    tradesUntilStop: payoutPresent ? stopAt : null,
-    expectedValueUsingObservedRate,
-    eligible: payoutPresent ? (ci.lower > breakEven && evPerTrade > 0) : false,
+    signals, trades, wins, losses, skipped, quoteMissing,
+    winRate: trades ? wins / trades : null,
+    ci95Lower: ci.lower, ci95Upper: ci.upper, theoreticalBaseline: baseline,
+    maxConsecutiveLosses: maxLossStreak, quoteCoverage,
+    payoutAssumption: payoutComplete ? 'Captured proposal payouts held constant in historical replay; not historical realised P/L.' : null,
+    currency: payoutComplete ? (payoutFor(payoutMap, symbol, strategy, strategy === 'DIFFERS' || strategy === 'MATCHES' ? 0 : null, stake)?.currency || null) : null,
+    payoutCapturedAtRange: payoutComplete && minCapturedAt !== Infinity ? [new Date(minCapturedAt).toISOString(), new Date(maxCapturedAt).toISOString()] : null,
+    conservativeBreakEvenWinProbability: payoutComplete ? maxBreakEven : null,
+    scenarioNetPnl: payoutComplete ? scenarioPnl : null,
+    scenarioNetPerTrade,
+    averageGrossPayout: payoutComplete ? grossPayoutSum / trades : null,
+    maxDrawdown: payoutComplete ? maxDrawdown : null,
+    sessionStopHit: payoutComplete ? stopHit : null,
+    tradesUntilStop: payoutComplete ? stopAt : null,
+    eligible: payoutComplete && ci.lower > maxBreakEven && scenarioNetPerTrade > 0,
   };
 }
 
@@ -136,29 +138,28 @@ export function evaluateSymbol(digits, symbol, payoutMap = null) {
     const holdout = scoreRange(digits, validationEnd, n, symbol, strategy, windowSize, stake, payoutMap);
     results.push({ ...validation, split: 'validation', holdout });
   }
-  // Rank only on validation. Holdout is reported independently and never used
-  // to choose a configuration.
+  // Ranking uses validation only. The final 20% holdout is never used to select.
   results.sort((a, b) => {
     if (a.eligible !== b.eligible) return a.eligible ? -1 : 1;
-    if (a.projectedEvPerTrade != null && b.projectedEvPerTrade != null) return b.projectedEvPerTrade - a.projectedEvPerTrade;
-    if (a.projectedEvPerTrade != null) return -1;
-    if (b.projectedEvPerTrade != null) return 1;
+    if (a.scenarioNetPerTrade != null && b.scenarioNetPerTrade != null) return b.scenarioNetPerTrade - a.scenarioNetPerTrade;
+    if (a.scenarioNetPerTrade != null) return -1;
+    if (b.scenarioNetPerTrade != null) return 1;
     return (b.ci95Lower ?? -1) - (a.ci95Lower ?? -1);
   });
   return {
     symbol, ticks: n, trainEnd, validationEnd,
-    rankingBasis: payoutMap ? 'validation payout-adjusted scenario EV; constant quote assumption' : 'validation hit-rate diagnostics only; no profitability ranking',
+    rankingBasis: payoutMap ? 'validation replay using exact captured quotes; constant-payout scenario only' : 'validation hit-rate diagnostics only; no monetary profitability ranking',
     results,
   };
 }
 
 export async function loadArchives(directory) {
-  const names = (await readdir(directory)).filter(n => /^ticks-\d{4}-\d{2}-\d{2}\.jsonl\.gz$/.test(n)).sort();
+  const names = (await readdir(directory)).filter(n => /^ticks-\\d{4}-\\d{2}-\\d{2}\\.jsonl\\.gz$/.test(n)).sort();
   const bySymbol = new Map();
   for (const name of names) {
     const bytes = await readFile(join(directory, name));
     const text = gunzipSync(bytes).toString('utf8');
-    for (const line of text.split('\n')) {
+    for (const line of text.split('\\n')) {
       if (!line) continue;
       let row;
       try { row = JSON.parse(line); } catch { continue; }
