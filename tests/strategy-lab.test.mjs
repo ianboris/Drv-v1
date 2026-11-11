@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateSymbol, parsePayoutSnapshots, wilsonInterval } from '../src/strategy-lab.mjs';
+import { buildSignals, evaluateSymbol, parsePayoutSnapshots, wilsonInterval } from '../src/strategy-lab.mjs';
 
 test('Wilson interval is bounded and contains the observed rate', () => {
   const ci = wilsonInterval(50, 100);
@@ -19,6 +19,15 @@ test('payout snapshots require valid stake and gross payout', () => {
   assert.equal(native.get('R_10|DIFFERS|3|2').payout, 2.2);
 });
 
+test('rolling digit signals use only the preceding window and parity filter', () => {
+  const repeated = Array(20).fill(3);
+  assert.equal(buildSignals(repeated, 10, 'DIFFERS')[10].barrier, 0);
+  assert.equal(buildSignals(repeated, 10, 'MATCHES')[10].barrier, 3);
+  const evenOnly = [0, 2, 4, 6, 8, 0, 2, 4, 6, 8, 1];
+  assert.ok(buildSignals(evenOnly, 10, 'EVEN')[10]);
+  assert.equal(buildSignals(evenOnly, 10, 'ODD')[10], null);
+});
+
 test('all four contract families are evaluated and holdout is separate', () => {
   const digits = Array.from({ length: 12000 }, (_, i) => (i * 7 + Math.floor(i / 13)) % 10);
   const result = evaluateSymbol(digits, 'R_10');
@@ -27,7 +36,7 @@ test('all four contract families are evaluated and holdout is separate', () => {
   assert.deepEqual(new Set(result.results.map(row => row.strategy)), new Set(['DIFFERS', 'MATCHES', 'EVEN', 'ODD']));
 });
 
-test('no payout snapshots means no monetary EV or profitability eligibility', () => {
+test('no payout snapshots means no monetary scenario P/L or profitability screen', () => {
   const digits = Array.from({ length: 12000 }, (_, i) => i % 10);
   const result = evaluateSymbol(digits, 'R_10');
   assert.ok(result.results.every(row => row.scenarioNetPnl === null && row.scenarioNetPerTrade === null && row.preliminaryScreenPass === false));
