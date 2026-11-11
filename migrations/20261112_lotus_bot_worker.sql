@@ -60,8 +60,6 @@ ALTER TABLE public.ddpe_bot_control
   ADD COLUMN IF NOT EXISTS worker_lease_expires_at timestamptz;
 ALTER TABLE public.ddpe_bot_events
   ADD COLUMN IF NOT EXISTS worker_instance_id text;
-ALTER TABLE public.ddpe_bot_settlements
-  ADD COLUMN IF NOT EXISTS worker_instance_id text;
 
 CREATE INDEX IF NOT EXISTS ddpe_bot_events_owner_created_idx
   ON public.ddpe_bot_events (owner_id, created_at DESC);
@@ -78,6 +76,7 @@ CREATE TABLE IF NOT EXISTS public.ddpe_bot_settlements (
   contract_status text NOT NULL CHECK (contract_status IN ('won', 'lost', 'sold', 'cancelled')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE public.ddpe_bot_settlements ADD COLUMN IF NOT EXISTS worker_instance_id text;
 
 CREATE OR REPLACE FUNCTION public.ddpe_apply_bot_settlement(
   p_owner_id text,
