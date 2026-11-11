@@ -18,10 +18,11 @@ Set these only on the staging worker host:
 - `BOT_MODE=plumbing_test`
 - `DATABASE_URL` — staging Neon branch connection string
 - `DERIV_TOKEN_ENCRYPTION_KEY` — same encryption key used by the OAuth backend
-- `LOTUS_WORKER_SYMBOL` — an explicitly chosen Deriv symbol code
 
-The selected account ID and encrypted OAuth token are read from the existing
-`ddpe_deriv_connections` table. The worker re-fetches the account list and
+Apply `migrations/20261111_lotus_deriv_demo_oauth.sql` to the staging branch
+before OAuth login. The selected account ID and encrypted OAuth token are read
+from the existing `ddpe_deriv_connections` table. The symbol is supplied in the
+start request body, not from an environment variable. The worker re-fetches the account list and
 rejects anything not identified as demo/virtual.
 
 ## Control API
@@ -46,8 +47,8 @@ previous instance even if it resumes later.
 Stop sets the durable stop flag but does not fence the current process, because
 it may still need to finish monitoring an accepted contract. A later start
 increments the epoch and is refused while an order or unknown buy remains
-unresolved. The 10-order plumbing cap and consecutive-loss count are preserved
-across worker restarts; restarting cannot reset either limit.
+unresolved. The 10-authorized-buy-attempt plumbing cap and consecutive-loss count are
+preserved across worker restarts; restarting cannot reset either limit.
 
 ## Order and safety semantics
 
