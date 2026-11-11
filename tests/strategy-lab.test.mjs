@@ -61,7 +61,7 @@ test('compressed daily archive loader parses JSONL and removes duplicate tick ID
       { symbol: 'R_10', epoch: 101, digit: 2, tick_uid: 'c' },
       { symbol: 'R_10', epoch: 102, digit: 9, tick_uid: 'd' }
     ];
-    const batchJsonl = batchRows.map(row => JSON.stringify(row)).join('\\n') + '\\n';
+    const batchJsonl = batchRows.map(row => JSON.stringify(row)).join('\n') + '\n';
     await writeFile(join(directory, `batch-v1-${'a'.repeat(64)}.jsonl.gz`), gzipSync(batchJsonl));
     const archives = await loadArchives(directory);
     assert.deepEqual(archives.get('R_10'), [4, 7, 2, 9]);
