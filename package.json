@@ -12,7 +12,8 @@
     "test:research": "node --test tests/research-market-data.test.mjs",
     "test:strategy-lab": "node --test tests/strategy-lab.test.mjs",
     "strategy:lab": "node scripts/lotus-strategy-lab.mjs",
-    "capture:proposals": "node scripts/capture-deriv-proposals.mjs"
+    "capture:proposals": "node scripts/capture-deriv-proposals.mjs",
+    "test:advanced-model": "node --test tests/advanced-model.test.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
