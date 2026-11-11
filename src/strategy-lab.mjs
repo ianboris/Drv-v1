@@ -73,7 +73,7 @@ function payoutFor(map, symbol, strategy, barrier, stake) {
 function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, payoutMap) {
   let signals = 0, trades = 0, wins = 0, losses = 0, skipped = 0, lossStreak = 0, maxLossStreak = 0;
   let scenarioPnl = 0, peak = 0, maxDrawdown = 0, stopHit = false, stopAt = null;
-  let quoteMissing = 0, maxBreakEven = 0, minCapturedAt = Infinity, maxCapturedAt = 0, grossPayoutSum = 0;
+  let quoteMissing = 0, maxBreakEven = 0, minCapturedAt = Infinity, maxCapturedAt = 0, grossPayoutSum = 0;\n  const currencies = new Set();
   for (let i = Math.max(start, windowSize); i < end; i++) {
     const pick = signal(digits, i, windowSize, strategy);
     if (!pick) { skipped++; continue; }
@@ -88,7 +88,7 @@ function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, pay
     if (quote) {
       const breakEven = stake / quote.payout;
       maxBreakEven = Math.max(maxBreakEven, breakEven);
-      grossPayoutSum += quote.payout;
+      grossPayoutSum += quote.payout;\n      if (quote.currency) currencies.add(String(quote.currency));
       if (quote.capturedAtMs) {
         minCapturedAt = Math.min(minCapturedAt, quote.capturedAtMs);
         maxCapturedAt = Math.max(maxCapturedAt, quote.capturedAtMs);
@@ -111,7 +111,7 @@ function scoreRange(digits, start, end, symbol, strategy, windowSize, stake, pay
     ci95Lower: ci.lower, ci95Upper: ci.upper, theoreticalBaseline: baseline,
     maxConsecutiveLosses: maxLossStreak, quoteCoverage,
     payoutAssumption: payoutComplete ? 'Captured proposal payouts held constant in historical replay; not historical realised P/L.' : null,
-    currency: payoutComplete ? (payoutFor(payoutMap, symbol, strategy, strategy === 'DIFFERS' || strategy === 'MATCHES' ? 0 : null, stake)?.currency || null) : null,
+    currency: payoutComplete && currencies.size === 1 ? [...currencies][0] : payoutComplete ? 'MIXED_OR_UNSPECIFIED' : null,
     payoutCapturedAtRange: payoutComplete && minCapturedAt !== Infinity ? [new Date(minCapturedAt).toISOString(), new Date(maxCapturedAt).toISOString()] : null,
     conservativeBreakEvenWinProbability: payoutComplete ? maxBreakEven : null,
     scenarioNetPnl: payoutComplete ? scenarioPnl : null,
