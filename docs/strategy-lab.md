@@ -25,10 +25,10 @@ To include proposal-based payout scenarios, supply a JSON array with one or more
 [
   {
     "symbol": "R_10",
-    "contractType": "DIFFERS",
+    "contract_type": "DIGITDIFF",
     "barrier": 5,
-    "stake": 5,
-    "askPrice": 5,
+    "amount": 5,
+    "ask_price": 5,
     "payout": 5.42,
     "currency": "USD",
     "capturedAt": "2026-11-12T12:00:00Z"
@@ -50,7 +50,7 @@ To include proposal-based payout scenarios, supply a JSON array with one or more
 node scripts/lotus-strategy-lab.mjs --archive-dir /var/lib/lotus/research --payouts ./proposal-snapshots.json --out ./lotus-strategy-report.json
 ```
 
-The payout field is the **gross amount returned on a win, including stake**. Snapshots must be real Deriv proposal responses for the exact market, contract type, barrier, stake and account currency. The report applies that captured quote as a constant scenario to validation/holdout outcomes; it is not a reconstruction of historical payouts or realised P/L. Missing exact quote coverage prevents monetary scenario reporting for that configuration.
+The payout field is the **gross amount returned on a win, including stake**. The loader accepts Deriv native contract codes (`DIGITDIFF`, `DIGITMATCH`, `DIGITEVEN`, `DIGITODD`) and the internal aliases. It accepts `ask_price`/`amount` or `askPrice`/`stake`. Snapshots must be real Deriv proposal responses for the exact market, contract type, barrier, stake and account currency. The report applies that captured quote as a constant scenario to validation/holdout outcomes; it is not a reconstruction of historical payouts or realised P/L. Missing exact quote coverage prevents monetary scenario reporting for that configuration.
 
 ## Interpretation and safety
 
