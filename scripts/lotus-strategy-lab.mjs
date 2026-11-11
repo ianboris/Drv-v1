@@ -14,7 +14,7 @@ const archives = await loadArchives(archiveDir);
 const payouts = payoutPath ? parsePayoutSnapshots(await readFile(resolve(payoutPath), 'utf8')) : null;
 const report = {
   generatedAt: new Date().toISOString(),
-  benchmark: { stakeUsd: 5, sessionStopLossUsd: 10, stakes: [1, 2, 3, 5], windows: [50, 100, 250, 500, 1000, 2500, 5000] },
+  benchmark: { stakeBenchmark: 5, sessionStopLoss: 10, amountUnit: 'account currency', stakes: [1, 2, 3, 5], windows: [50, 100, 250, 500, 1000, 2500, 5000] },
   warning: 'This report cannot identify a profitable strategy without representative, correctly timestamped tick archives and matching current proposal snapshots. Proposal-based P/L is a constant-payout scenario, not historical realised P/L. Verify account currency before treating USD benchmark amounts as account amounts.',
   markets: [...archives.entries()].map(([symbol, digits]) => evaluateSymbol(digits, symbol, payouts)),
 };
