@@ -204,6 +204,7 @@ async function connect() {
   let acceptedTickFrames = 0;
   let invalidTickFrames = 0;
   let duplicateTickFrames = 0;
+  let duplicateSamplesLogged = 0;
   let ignoredTickFrames = 0;
 
   socket.addEventListener("message", event => {
@@ -295,7 +296,21 @@ async function connect() {
       try {
         const result = acceptTick(message.tick, "live");
         if (result === "accepted") acceptedTickFrames++;
-        else if (result === "duplicate") duplicateTickFrames++;
+        else if (result === "duplicate") {
+          duplicateTickFrames++;
+          // Capture a few raw frames to verify whether provider tick IDs are unique.
+          if (duplicateSamplesLogged < 8) {
+            duplicateSamplesLogged++;
+            console.warn("[research] duplicate tick sample:", JSON.stringify({
+              symbol: message.tick.symbol,
+              id: message.tick.id ?? null,
+              epoch: message.tick.epoch ?? null,
+              quote: message.tick.quote ?? null,
+              pip_size: message.tick.pip_size ?? null,
+              subscription_id: message.subscription?.id ?? null
+            }));
+          }
+        }
         else invalidTickFrames++;
       }
       catch (error) {
