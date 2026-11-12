@@ -15,7 +15,9 @@
     "capture:proposals": "node scripts/capture-deriv-proposals.mjs",
     "test:advanced-model": "node --test tests/advanced-model.test.mjs",
     "test:all-models": "npm run test:strategy-lab && npm run test:advanced-model && npm run test:research-batches",
-    "test:research-batches": "node --test tests/research-batch-store.test.mjs"
+    "test:research-batches": "node --test tests/research-batch-store.test.mjs",
+    "test:research-analytics": "node --test tests/research-analytics.test.mjs",
+    "research:report": "node scripts/lotus-research-report.mjs"
   },
   "dependencies": {
     "react": "18.3.1",
