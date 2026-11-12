@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeSymbolTicks, evaluateLivePayouts, wilson95 } from '../src/research-analytics.mjs';
+import { analyzeSymbolTicks, evaluateLivePayouts, loadResearchTicks, wilson95 } from '../src/research-analytics.mjs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 test('Wilson interval is bounded and includes observed proportion',()=>{
   const ci=wilson95(50,100);
@@ -27,4 +31,20 @@ test('live payout evaluator rejects stale and wrong-currency quotes',()=>{
   const result=evaluateLivePayouts(p,'X',q,5,'USD',now);
   assert.equal(result.length,1);
   assert.ok(Math.abs(result[0].expectedNet - (.9*5.5-5))<1e-9);
+});
+
+test('compressed archives load, deduplicate overlap, and prefer live provenance',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'lotus-research-'));
+  try {
+    const rows=[
+      {symbol:'1HZ10V',epoch:1,digit:4,tick_uid:'same',source:'backfill'},
+      {symbol:'1HZ10V',epoch:1,digit:4,tick_uid:'same',source:'live'},
+      {symbol:'1HZ10V',epoch:2,digit:5,tick_uid:'next',source:'live'}
+    ];
+    await writeFile(join(dir,'batch-v1-'+ 'a'.repeat(64)+'.jsonl.gz'),
+      gzipSync(rows.map(x=>JSON.stringify(x)).join('\\n')+'\\n'));
+    const loaded=await loadResearchTicks(dir);
+    assert.equal(loaded.get('1HZ10V').length,2);
+    assert.equal(loaded.get('1HZ10V')[0].source,'live');
+  } finally { await rm(dir,{recursive:true,force:true}); }
 });
