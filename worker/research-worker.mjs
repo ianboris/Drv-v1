@@ -9,6 +9,7 @@ const OWNER = "primary";
 const ARCHIVE_DIR = process.env.LOTUS_ARCHIVE_DIR || "/var/lib/lotus/research";
 const MAX_QUEUE = 25000;
 const FLUSH_COUNT = 500;
+const FLUSH_INTERVAL_MS = Math.max(1000, Number(process.env.LOTUS_RESEARCH_FLUSH_MS || 10000));
 const MAX_SYMBOLS = Math.min(20, Math.max(1, Number(process.env.LOTUS_RESEARCH_MAX_SYMBOLS || 10)));
 const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
 const DATABASE_URL = process.env.NEON_STAGING_DATABASE_URL;
@@ -357,7 +358,7 @@ async function main() {
   await mkdir(ARCHIVE_DIR, {recursive:true, mode:0o700});
   await recoverArchive();
   await writeHealth("CONNECTING");
-  flushTimer = setInterval(() => flush().catch(error => console.error("[research] flush:", error.message)), 5000);
+  flushTimer = setInterval(() => flush().catch(error => console.error("[research] flush:", error.message)), FLUSH_INTERVAL_MS);
   healthTimer = setInterval(() => writeHealth(socket?.readyState === WebSocket.OPEN ? "CONNECTED" : "DEGRADED")
     .catch(error => console.error("[research] heartbeat:", error.message)), 15000);
   while (!stopping) {
@@ -366,7 +367,6 @@ async function main() {
       let stableLiveSince = null;
       while (!stopping && socket?.readyState === WebSocket.OPEN) {
         await sleep(1000);
-        if (queue.length) await flush();
         if (lastLiveTickAt && Date.now() - lastLiveTickAt < 15000) {
           stableLiveSince ??= Date.now();
           if (Date.now() - stableLiveSince >= 300000) reconnects = 0;
