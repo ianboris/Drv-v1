@@ -38,8 +38,10 @@ function acceptTick(tick, source = "live") {
   const quote = Number(tick?.quote), epoch = Number(tick?.epoch);
   const precision = normalizePipSize(tick?.pip_size, quote) ?? symbols.get(symbol)?.pipSize;
   if (!symbol || !Number.isFinite(quote) || !Number.isSafeInteger(epoch) || precision === undefined) return "invalid";
-  const providerId = tick.id == null ? "" : String(tick.id);
-  const tickUid = providerId || `${symbol}:${epoch}:${quote}`;
+  // Deriv's tick.id in this stream is the subscription ID, shared by every
+  // tick on that subscription. It is not a unique tick identifier.
+  // Use the tick's market identity so changing quotes/epochs are not discarded.
+  const tickUid = `${symbol}:${epoch}:${quote}`;
   const key = `${symbol}:${tickUid}`;
   if (seen.has(key)) return "duplicate";
   if (queue.length >= MAX_QUEUE) throw new Error("Research queue reached its hard memory limit");
