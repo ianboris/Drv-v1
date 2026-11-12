@@ -1306,7 +1306,7 @@ function App() {
           <button className="secondary-button" onClick={()=>setTab('settings')}>Account and risk settings</button>
         </div>
       </section>
-      <section className="panel"><div className="panel-title"><div><div className="section-heading">CURRENT MARKET DIGIT STREAM</div><p className="muted">{marketName} · latest 60 final quote digits</p></div><span className="live-dot">LIVE FEED</span></div><div className="digits">{digits.slice(-60).map((digit,index,array)=><span key={ticks.slice(-60)[index]?.id ?? index} className={index===array.length-1?'last':''}>{digit}</span>)}</div></section>
+      <section className="panel"><div className="panel-title"><div><div className="section-heading">CURRENT MARKET DIGIT STREAM</div><p className="muted">{marketName} · latest 60 tick digits</p></div><span className="live-dot">{marketFeedStatus === "LIVE" ? "LIVE FEED" : marketFeedStatus === "STALE" ? "FEED STALE" : "WAITING FOR TICKS"}</span></div><div className="digits">{digits.slice(-60).map((digit,index,array)=><span key={ticks.slice(-60)[index]?.id ?? index} className={index===array.length-1?'last':''}>{digit}</span>)}</div></section>
       <section className="stats-grid"><Metric label={settings.windowSize+'-tick sample'} value={stats.sample.toString()} /><Metric label="Shannon entropy" value={stats.sample?stats.entropy.toFixed(3):'—'} /><Metric label="All-session ticks" value={digits.length.toLocaleString()} /><Metric label="Out-of-sample edge" value="Not established" /></section>
     </>}
     {tab === 'engine' && <>
