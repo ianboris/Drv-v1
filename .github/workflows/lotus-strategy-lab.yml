@@ -3,10 +3,20 @@ name: Lotus strategy lab verification
 on:
   pull_request:
     paths:
+      - 'src/research-analytics.mjs'
+      - 'tests/research-analytics.test.mjs'
+      - 'scripts/lotus-research-report.mjs'
       - 'src/strategy-lab.mjs'
       - 'src/advanced-model.mjs'
       - 'src/advanced-model.d.mts'
       - 'src/main.tsx'
+      - 'src/live-tick-identity.mjs'
+      - 'src/live-tick-identity.d.mts'
+      - 'tests/live-tick-identity.test.mjs'
+      - 'src/digit-contracts.mjs'
+      - 'src/digit-contracts.d.mts'
+      - 'tests/digit-contracts.test.mjs'
+      - 'tests/backtest.test.mjs'
       - 'src/style.css'
       - 'tests/advanced-model.test.mjs'
       - 'docs/strategy-lab.md'
@@ -20,10 +30,20 @@ on:
       - feat/lotus-stake-window-optimization
       - feat/lotus-advanced-model
     paths:
+      - 'src/research-analytics.mjs'
+      - 'tests/research-analytics.test.mjs'
+      - 'scripts/lotus-research-report.mjs'
       - 'src/strategy-lab.mjs'
       - 'src/advanced-model.mjs'
       - 'src/advanced-model.d.mts'
       - 'src/main.tsx'
+      - 'src/live-tick-identity.mjs'
+      - 'src/live-tick-identity.d.mts'
+      - 'tests/live-tick-identity.test.mjs'
+      - 'src/digit-contracts.mjs'
+      - 'src/digit-contracts.d.mts'
+      - 'tests/digit-contracts.test.mjs'
+      - 'tests/backtest.test.mjs'
       - 'src/style.css'
       - 'tests/advanced-model.test.mjs'
       - 'docs/strategy-lab.md'

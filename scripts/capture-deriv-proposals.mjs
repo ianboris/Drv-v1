@@ -4,7 +4,6 @@ import { resolve } from 'node:path';
 import { loadArchives } from '../src/strategy-lab.mjs';
 
 const WS_URL = 'wss://api.derivws.com/trading/v1/options/ws/public';
-const STAKES = [1, 2, 3, 5];
 const DIGIT_TYPES = [{ strategy: 'DIFFERS', contract_type: 'DIGITDIFF' }, { strategy: 'MATCHES', contract_type: 'DIGITMATCH' }];
 const PARITY_TYPES = [{ strategy: 'EVEN', contract_type: 'DIGITEVEN' }, { strategy: 'ODD', contract_type: 'DIGITODD' }];
 
@@ -12,6 +11,8 @@ function arg(name, fallback = null) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : fallback;
 }
+const stakes = String(arg('--stakes', '1,2,3,5')).split(',').map(Number).filter(n => Number.isFinite(n) && n > 0);
+if (!stakes.length || new Set(stakes).size !== stakes.length) throw new Error('Pass --stakes as unique positive numbers.');
 const currency = String(arg('--currency', '')).toUpperCase();
 if (!/^[A-Z0-9]{2,20}$/.test(currency)) {
   throw new Error('Pass --currency with the account-holder currency shown by Deriv (for example USD). Do not guess this value.');
@@ -19,8 +20,7 @@ if (!/^[A-Z0-9]{2,20}$/.test(currency)) {
 const archiveDir = resolve(arg('--archive-dir', '/var/lib/lotus/research'));
 const symbolsArg = arg('--symbols');
 const outPath = resolve(arg('--out', './proposal-snapshots.json'));
-const archives = await loadArchives(archiveDir);
-const symbols = symbolsArg ? symbolsArg.split(',').map(s => s.trim()).filter(Boolean) : [...archives.keys()];
+const symbols = symbolsArg ? symbolsArg.split(',').map(s => s.trim()).filter(Boolean) : [...(await loadArchives(archiveDir)).keys()];
 if (!symbols.length) throw new Error('No archived markets found. Pass --symbols or start the research collector first.');
 
 const ws = new WebSocket(WS_URL);
@@ -68,7 +68,7 @@ function request(payload) {
 const snapshots = [], errors = [];
 try {
   for (const symbol of symbols) {
-    for (const stake of STAKES) {
+    for (const stake of stakes) {
       const requests = [
         ...DIGIT_TYPES.flatMap(contract => Array.from({ length: 10 }, (_, barrier) => ({ ...contract, barrier: String(barrier) }))),
         ...PARITY_TYPES.map(contract => ({ ...contract, barrier: null })),
@@ -119,7 +119,8 @@ console.log(JSON.stringify({
   output: outPath,
   currency,
   markets: symbols.length,
-  requested: symbols.length * STAKES.length * 22,
+  stakes,
+  requested: symbols.length * stakes.length * 22,
   captured: snapshots.length,
   rejectedOrFailed: errors.length,
   failures: errors.slice(0, 20),

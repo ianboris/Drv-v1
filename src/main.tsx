@@ -5,6 +5,8 @@ import { calculateContractEconomics } from './riskCalculator';
 import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
 import { digitFromQuote, normalizePipSize } from './market-data.mjs';
 import { selectForecastModel } from './advanced-model.mjs';
+import { createDigitProposalRequest } from './digit-contracts.mjs';
+import { createLiveTickId } from './live-tick-identity.mjs';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -18,8 +20,8 @@ type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpo
 type ResearchStrategy = 'DIFFERS' | 'MATCHES' | 'EVEN' | 'ODD';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
-type DemoDigitTrade = { contractId: string; accountId: string; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
-type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; proposalId?: string; askPrice?: number; proposalSubscriptionId?: string };
+type DemoDigitTrade = { contractId: string; accountId: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
+type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: ResearchStrategy; targetDigit: number; proposalId?: string; askPrice?: number; proposalSubscriptionId?: string };
 const DEMO_TRADES_KEY = 'lotus-demo-digit-trades-v1';
 const DEMO_DAILY_KEY = 'lotus-demo-digit-daily-v1';
 function readDemoTrades(): DemoDigitTrade[] { try { const value = JSON.parse(localStorage.getItem(DEMO_TRADES_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } }
@@ -94,7 +96,7 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
 // Validate once per historical dataset/strategy/window. The cache prevents a full backtest
 // from running again on every live tick while still invalidating when the market history changes.
 const walkForwardEvidenceCache = new Map<string, { sampleId: string; result: WalkForwardBacktestResult }>();
-function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: 'DIFFERS' | 'MATCHES', windowSize: number): WalkForwardBacktestResult | null {
+function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: ResearchStrategy, windowSize: number): WalkForwardBacktestResult | null {
   const historyTicks = ticks.filter(tick => tick.source === 'history').slice(-5500);
   const sampleId = historyTicks.length ? historyTicks[historyTicks.length - 1].id : '';
   const cacheKey = `${marketSymbol}:${strategy}:${windowSize}`;
@@ -122,6 +124,7 @@ function App() {
   const [ticks, setTicks] = useState<Tick[]>([]);
   const [pipSize, setPipSize] = useState<number>();
   const [status, setStatus] = useState('CONNECTING');
+  const [marketFeedStatus, setMarketFeedStatus] = useState<'WAITING' | 'LIVE' | 'STALE'>('WAITING');
   const [error, setError] = useState('');
   const [authenticated, setAuthenticated] = useState(false);
   const [derivDemoConnected, setDerivDemoConnected] = useState(false);
@@ -264,6 +267,7 @@ function App() {
     const connect = () => {
       if (!alive) return;
       setStatus('CONNECTING');
+      setMarketFeedStatus('WAITING');
       console.info('[DERIV] Opening public market-data WebSocket', { endpoint: DERIV_WS_URL });
       socket = new WebSocket(DERIV_WS_URL);
       ws.current = socket;
@@ -276,11 +280,13 @@ function App() {
         }, 60000);
         console.info('[DERIV] WebSocket connected', { readyState: socket.readyState });
         setStatus('CONNECTED');
+        setMarketFeedStatus('WAITING');
         setError('');
         lastMarketTickAt = Date.now();
         tickWatchdogInterval = window.setInterval(() => {
           if (!alive || socket?.readyState !== WebSocket.OPEN) return;
           if (Date.now() - lastMarketTickAt > 90000) {
+            setMarketFeedStatus('STALE');
             console.warn('[DERIV] No market ticks received for 90 seconds; restarting public feed');
             socket.close(4001, 'Market tick stream stale');
           }
@@ -304,7 +310,10 @@ function App() {
         if (!alive) return;
         try {
           const response = JSON.parse(event.data);
-          if (response.msg_type === 'tick' && response.tick) lastMarketTickAt = Date.now();
+          if (response.msg_type === 'tick' && response.tick) {
+            lastMarketTickAt = Date.now();
+            setMarketFeedStatus('LIVE');
+          }
           if (response.msg_type === 'ping') {
             if (Number(response.req_id) === heartbeatRequestId - 1) {
               awaitingHeartbeat = false;
@@ -406,11 +415,8 @@ function App() {
             }
             const tickPipSize = pipSizesBySymbolRef.current.get(marketSymbol);
             if (Number.isFinite(quote) && Number.isSafeInteger(epoch)) {
-              const derivTickId = response.tick.id !== undefined && response.tick.id !== null
-                ? String(response.tick.id)
-                : crypto.randomUUID();
               const tick: Tick = {
-                id: `live:${marketSymbol}:${derivTickId}`,
+                id: createLiveTickId(marketSymbol, epoch, quote),
                 symbol: marketSymbol,
                 quote,
                 epoch,
@@ -483,7 +489,7 @@ function App() {
                   const priorStats = priorDigits.length >= windowSizeRef.current ? getStats(priorDigits) : null;
                   if (priorStats && demoAutoTradingRef.current && marketSymbol === selectedSymbolRef.current) {
                     const demoStrategy = analysisStateRef.current.strategy;
-                    const demoTarget = demoStrategy === 'DIFFERS' ? priorStats.barrier : demoStrategy === 'MATCHES' ? priorStats.counts.indexOf(Math.max(...priorStats.counts)) : -1;
+                    const demoTarget = demoStrategy === 'DIFFERS' ? priorStats.barrier : demoStrategy === 'MATCHES' ? priorStats.counts.indexOf(Math.max(...priorStats.counts)) : demoStrategy === 'EVEN' ? 0 : 1;
                     if (demoTarget >= 0) requestDemoDigitTrade(marketSymbol, demoStrategy, demoTarget);
                   }
                   if (priorStats && analysisStateRef.current.running) {
@@ -854,7 +860,7 @@ function App() {
         demoReconnectAttemptRef.current = 0;
         setDerivDemoMessage('DEMO WEBSOCKET CONNECTED · NO REAL FUNDS');
         setDemoSocketStatus('CONNECTED');
-        setDemoTradeMessage('Demo order channel ready. Start a Differs or Matches demo session from the Engine page.');
+        setDemoTradeMessage('Demo order channel ready. Choose Differs, Matches, Even or Odd on the Engine page to start a demo session.');
         setDerivDemoBusy(false);
 
         // Keep the authenticated channel alive; every reconnect obtains a new OTP.
@@ -1142,7 +1148,7 @@ function App() {
   function requestDemoDigitTrade(marketSymbol: string, strategy: ResearchStrategy, targetDigit: number) {
     const socket = demoWs.current;
     if (!demoAutoTradingRef.current || !socket || socket.readyState !== WebSocket.OPEN) return;
-    if (marketSymbol !== selectedSymbolRef.current || strategy !== 'DIFFERS') return;
+    if (marketSymbol !== selectedSymbolRef.current) return;
     const accountCurrency = demoCurrencyRef.current;
     if (!accountCurrency) { setDemoTradeMessage('Select a verified demo account with a known currency before trading.'); return; }
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
@@ -1159,9 +1165,12 @@ function App() {
     const reqId = demoRequestIdRef.current++;
     demoOrderRequestsRef.current.set(reqId, { kind: 'proposal', symbol: marketSymbol, strategy, targetDigit });
     armDemoOrderTimeout(reqId, 'proposal', 12000);
-    const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : 'DIGITMATCH';
     try {
-      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), subscribe: 1, req_id: reqId }));
+      const proposal = createDigitProposalRequest({
+        strategy, symbol: marketSymbol, amount: settingsRef.current.stake,
+        currency: accountCurrency, targetDigit, reqId,
+      });
+      socket.send(JSON.stringify(proposal));
       setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
     } catch {
       clearDemoOrderTimeout(reqId);
@@ -1258,7 +1267,7 @@ function App() {
   return <main className={theme === 'light' ? 'theme-light' : 'theme-dark'}>
     <header className="topbar">
       <div><div className="eyebrow">LOTUS · DERIV SYNTHETICS</div><h1>Lotus</h1><p className="subhead">Digit trading terminal · live intelligence and demo execution</p></div>
-      <div className="header-actions"><span className={status === 'CONNECTED' ? 'status online' : 'status'}><i />MARKET {status}</span><span className={derivDemoConnected ? "status online account-status" : "status account-status"}><i />{derivDemoConnected ? "DERIV AUTHORIZED · DEMO" : "DEMO ACCOUNT NOT LINKED"}</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
+      <div className="header-actions"><span className={marketFeedStatus === 'LIVE' ? 'status online' : 'status'}><i />MARKET {marketFeedStatus === 'LIVE' ? 'LIVE' : marketFeedStatus === 'STALE' ? 'STALE' : status === 'CONNECTED' ? 'WAITING FOR TICKS' : status}</span><span className={derivDemoConnected ? "status online account-status" : "status account-status"}><i />{derivDemoConnected ? "DERIV AUTHORIZED · DEMO" : "DEMO ACCOUNT NOT LINKED"}</span><button className="secondary-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</button><button className="secondary-button" onClick={logout}>Sign out</button></div>
     </header>
 
     <nav className="tabs" aria-label="Main navigation">
@@ -1270,8 +1279,8 @@ function App() {
     </nav>
 
     <section className="mode-banner">
-      <span className={status === 'CONNECTED' ? 'mode-light active' : 'mode-light'} />
-      <div><strong>LOTUS ENGINE</strong><small>{status === 'CONNECTED' ? 'LIVE MARKET FEED · RESEARCH MODE' : 'HISTORICAL MODE · LAST AVAILABLE DATA'}</small></div>
+      <span className={marketFeedStatus === 'LIVE' ? 'mode-light active' : 'mode-light'} />
+      <div><strong>LOTUS ENGINE</strong><small>{marketFeedStatus === 'LIVE' ? 'LIVE MARKET FEED · RESEARCH MODE' : marketFeedStatus === 'STALE' ? 'MARKET FEED STALE · RECONNECTING' : 'WAITING FOR LIVE MARKET TICKS'}</small></div>
       <span className="execution-lock">{demoAutoTrading ? 'DEMO BOT ARMED' : demoSocketStatus === 'CONNECTED' ? 'DEMO CHANNEL READY' : 'DEMO EXECUTION DISARMED'}</span>
     </section>
     {error && <div className="error" role="alert">{error}</div>}
@@ -1297,19 +1306,13 @@ function App() {
           <button className="secondary-button" onClick={()=>setTab('settings')}>Account and risk settings</button>
         </div>
       </section>
-      <section className="panel market-scanner"><div className="panel-title"><div><div className="section-heading">DIGIT MARKET LEADERS</div><p className="muted">Historical Differs research across eligible markets. Live ticks and quotes follow the selected market only; select a row to switch the stream.</p></div><span className="live-dot">{demoCurrency ? 'SELECTED-MARKET QUOTE' : 'CONNECT DEMO ACCOUNT'}</span></div>
-        {highestWinRateMarket && <div className="scanner-leader"><span>Highest observed hit rate · minimum 100 settled paper outcomes</span><strong>{highestWinRateMarket.name}</strong><small>{(highestWinRateMarket.winRate! * 100).toFixed(2)}% from {highestWinRateMarket.total} outcomes</small></div>}
-        {bestMarket ? <div className="scanner-leader"><span>Best conservative-EV research candidate</span><strong>{bestMarket.name}</strong><small>{(bestMarket.winRate! * 100).toFixed(2)}% observed hit rate · barrier {bestMarket.quote!.barrier} · {(bestMarket.conservativeWinRate! * 100).toFixed(2)}% 95% lower bound · +{bestMarket.conservativeEv!.toFixed(4)} {demoCurrency} estimated EV per contract</small></div> : <p className="muted">No market currently passes the quote and sample-size research gates. A positive paper estimate would still not establish future profitability.</p>}
-        <div className="table-wrap"><table><thead><tr><th>Market</th><th>Barrier</th><th>Settled / matched</th><th>Hit rate</th><th>95% lower bound</th><th>Ask / payout</th><th>Estimated EV</th></tr></thead><tbody>{scannerRows.map(row=><tr key={row.symbol}><td><button className="text-button" onClick={()=>selectSymbol(row.symbol)}>{row.name}</button></td><td>{row.quote ? row.quote.barrier : '—'}</td><td>{row.total} / {row.matchedSample}</td><td>{row.winRate === null ? '—' : (row.winRate*100).toFixed(2)+'%'}</td><td>{row.conservativeWinRate === null ? '—' : (row.conservativeWinRate*100).toFixed(2)+'%'}</td><td>{row.quote ? `${row.quote.askPrice.toFixed(4)} / ${row.quote.payout.toFixed(4)}` : 'Waiting'}</td><td>{row.conservativeEv === null ? '—' : `${row.conservativeEv>=0?'+':''}${row.conservativeEv.toFixed(4)} ${demoCurrency}`}</td></tr>)}{!scannerRows.length && <tr><td colSpan={7} className="empty">Waiting for eligible Differs markets…</td></tr>}</tbody></table></div>
-        <small className="muted">Estimated EV uses the Wilson 95% lower-bound paper hit rate for the quoted barrier. It is not realized P/L and does not correct for serial dependence or selection bias.</small>
-      </section>
-      <section className="panel"><div className="panel-title"><div><div className="section-heading">CURRENT MARKET DIGIT STREAM</div><p className="muted">{marketName} · latest 60 final quote digits</p></div><span className="live-dot">LIVE FEED</span></div><div className="digits">{digits.slice(-60).map((digit,index,array)=><span key={ticks.slice(-60)[index]?.id ?? index} className={index===array.length-1?'last':''}>{digit}</span>)}</div></section>
+      <section className="panel"><div className="panel-title"><div><div className="section-heading">CURRENT MARKET DIGIT STREAM</div><p className="muted">{marketName} · latest 60 tick digits</p></div><span className="live-dot">{marketFeedStatus === "LIVE" ? "LIVE FEED" : marketFeedStatus === "STALE" ? "FEED STALE" : "WAITING FOR TICKS"}</span></div><div className="digits">{digits.slice(-60).map((digit,index,array)=><span key={ticks.slice(-60)[index]?.id ?? index} className={index===array.length-1?'last':''}>{digit}</span>)}</div></section>
       <section className="stats-grid"><Metric label={settings.windowSize+'-tick sample'} value={stats.sample.toString()} /><Metric label="Shannon entropy" value={stats.sample?stats.entropy.toFixed(3):'—'} /><Metric label="All-session ticks" value={digits.length.toLocaleString()} /><Metric label="Out-of-sample edge" value="Not established" /></section>
     </>}
     {tab === 'engine' && <>
       <section className="panel engine-hero">
         <div className="section-heading">DIGIT EXECUTION COCKPIT</div><h2>Choose your trading engine</h2>
-        <p className="muted">Live target selection is driven by the rolling digit window. Demo purchases are DIFFERS-only and gated by chronological walk-forward results plus a fresh payout-adjusted quote. A failed gate blocks the purchase; it is not bypassed.</p>
+        <p className="muted">Live target selection is driven by the rolling digit window. All four digit contracts are available on the demo account only, gated by chronological walk-forward results plus a fresh payout-adjusted quote. Start requests an immediate first evaluation; subsequent evaluations follow new live ticks. A failed gate blocks the purchase; it is not bypassed.</p>
         <div className="strategy-switch">
           <button className={activeStrategy === 'DIFFERS' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('DIFFERS'); setAnalysisRunning(false); }}>DIFFERS<small>Next digit is not the target</small></button>
           <button className={activeStrategy === 'MATCHES' ? 'selected' : ''} disabled={demoAutoTrading || Boolean(openDemoContractRef.current)} onClick={() => { setActiveStrategy('MATCHES'); setAnalysisRunning(false); }}>MATCHES<small>Next digit equals the target</small></button>
@@ -1323,7 +1326,7 @@ function App() {
           <div className="candidate-row"><span>Prior-window frequency estimate · not a win probability</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : activeStrategy === 'MATCHES' ? Math.max(...stats.probabilities) : rollingDigits.filter(digit => activeStrategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / stats.sample) * 100).toFixed(2) + '%' : '—'}</strong></div>
           <div className="candidate-row"><span>Historical sample</span><strong>{stats.sample} / {settings.windowSize}</strong></div>
           <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
-          <p className="muted">Differs selects the least-frequent digit; Matches selects the most-frequent digit. These are rolling-frequency heuristics, not calibrated probabilities. MATCHES, EVEN and ODD are research-only; only DIFFERS can request a demo purchase, and only when its out-of-sample, payout-adjusted gate passes.</p>
+          <p className="muted">Differs selects the least-frequent digit; Matches selects the most-frequent digit; Even and Odd evaluate parity directly. These are research heuristics, not calibrated probabilities. Any of the four strategies can request a demo purchase only after its own out-of-sample walk-forward evidence, fresh Deriv quote and conservative positive expected-value gate pass.</p>
         </div>
         <div className="control-row research-controls">
           <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START {activeStrategy} ANALYSIS</button>
@@ -1345,7 +1348,7 @@ function App() {
         <small className="muted">These are model-estimated next-digit probabilities, not calibrated guarantees. A low log-loss model on a short recent slice is not proof of positive trading expectancy. The demo execution path remains separately gated by walk-forward evidence and fresh payout quotes.</small>
       </section>
       <section className="panel demo-execution-panel">
-        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick DIFFERS demo contracts only. MATCHES remains research-only until it demonstrates a reliable out-of-sample edge. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
+        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">One-tick DIFFERS, MATCHES, EVEN and ODD contracts on the verified Deriv demo account only. Each strategy must pass its own walk-forward and fresh-payout checks. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
         <div className="candidate-row"><span>Selected demo account</span><strong>{selectedDemoAccountId || 'Not selected'}</strong></div>
         <div className="candidate-row"><span>Demo currency</span><strong>{demoCurrency || 'Unavailable'}</strong></div>
         <div className="candidate-row"><span>Execution socket</span><strong>{demoSocketStatus}</strong></div>
@@ -1356,15 +1359,26 @@ function App() {
         <div className="candidate-row"><span>Daily profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} {demoCurrency}</strong></div>
         <div className="demo-execution-actions">
           <button className="secondary-button" disabled={!derivDemoConnected || !selectedDemoAccountId || demoSocketStatus === 'CONNECTING' || demoSocketStatus === 'CONNECTED' || derivDemoBusy} onClick={openDerivDemoSession}>CONNECT DEMO EXECUTION</button>
-          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || activeStrategy !== 'DIFFERS' || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Checking historical walk-forward evidence and waiting for the next eligible quote.`); }}>START DEMO BOT</button>
+          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || marketFeedStatus !== 'LIVE' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => {
+            demoAutoTradingRef.current = true;
+            setDemoAutoTrading(true);
+            setAnalysisRunning(true);
+            const currentTicks = ticksBySymbolRef.current.get(selectedSymbolRef.current) || [];
+            const priorDigits = currentTicks.slice(-settingsRef.current.windowSize).map(tick => tick.lastDigit ?? digitFromQuote(tick.quote, tick.pipSize));
+            const priorStats = priorDigits.length >= settingsRef.current.windowSize ? getStats(priorDigits) : null;
+            const target = !priorStats ? -1 : activeStrategy === 'DIFFERS' ? priorStats.barrier : activeStrategy === 'MATCHES' ? priorStats.counts.indexOf(Math.max(...priorStats.counts)) : activeStrategy === 'EVEN' ? 0 : 1;
+            setDemoTradeMessage(`Demo ${activeStrategy} started on ${marketName}. Evaluating the first quote now; later evaluations follow each new live tick.`);
+            if (priorStats && target >= 0) requestDemoDigitTrade(selectedSymbolRef.current, activeStrategy, target);
+            else setDemoTradeMessage('Demo bot started. Waiting for a complete live analysis window before the first quote request.');
+          }}>START DEMO BOT</button>
           <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; for (const [id, request] of demoOrderRequestsRef.current) if (request.kind === 'proposal') demoOrderRequestsRef.current.delete(id); setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any submitted buy or open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
         <div className="table-wrap"><table><thead><tr><th>Opened</th><th>Market</th><th>Engine</th><th>Target</th><th>Stake</th><th>Status</th><th>Demo P/L</th></tr></thead><tbody>
-          {[...demoTrades.filter(trade => trade.accountId === selectedDemoAccountId)].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
-          {!demoTrades.some(trade => trade.accountId === selectedDemoAccountId) && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a demo execution session, choose Differs or Matches, then start the demo bot.</td></tr>}
+          {[...demoTrades.filter(trade => trade.accountId === selectedDemoAccountId)].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.strategy === 'EVEN' ? 'Even' : trade.strategy === 'ODD' ? 'Odd' : trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
+          {!demoTrades.some(trade => trade.accountId === selectedDemoAccountId) && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a verified demo session, choose one of the four digit strategies, then start the demo bot.</td></tr>}
         </tbody></table></div>
-        <small className="muted">Controls: one open contract at a time, 1-second cooldown and browser-enforced daily loss and profit stops. Historical walk-forward validation uses the already-loaded tick history; it does not wait for 100 new live paper outcomes. The bot runs only while this dashboard remains open. These controls are demo safeguards, not server-enforced live risk controls. Even/Odd remains research-only.</small>
+        <small className="muted">Controls: one open contract at a time, 1-second cooldown, strategy-specific walk-forward validation (at least 100 test predictions), fresh Deriv proposal, positive conservative expected value, and browser-enforced daily loss/profit stops. Parity contracts omit the digit barrier; Differs/Matches use their selected digit. The bot runs only while this dashboard remains open. These are demo safeguards, not server-enforced live risk controls.</small>
       </section>
 
 
@@ -1479,7 +1493,7 @@ function App() {
             <button className="secondary-button" disabled={derivDemoBusy} onClick={disconnectDerivDemo}>DISCONNECT</button>
           </div>
         </>}
-        <p className="muted">Demo execution is available from the Differs / Matches Engine page after the authenticated demo WebSocket is connected. Lotus submits one-tick contracts only to the verified demo account. The real-account endpoint remains disabled and is never requested by this feature.</p>
+        <p className="muted">Demo execution is available from the four-strategy Engine page after the authenticated demo WebSocket is connected. Lotus submits one-tick contracts only to the verified demo account. The real-account endpoint remains disabled and is never requested by this feature.</p>
       </section>
       <section className="panel safety-panel">
         <div className="section-heading">EXECUTION SAFETY</div>
@@ -1492,7 +1506,7 @@ function App() {
       </section>
     </>}
 
-    <footer>LOTUS ENGINE · {status === 'CONNECTED' ? 'LIVE MARKET DATA' : 'HISTORICAL MODE'} · EXECUTION LOCKED · {backendStatus}</footer>
+    <footer>LOTUS ENGINE · {marketFeedStatus === 'LIVE' ? 'LIVE MARKET DATA' : 'WAITING FOR MARKET DATA'} · EXECUTION LOCKED · {backendStatus}</footer>
   </main>;
 }
 
