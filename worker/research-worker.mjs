@@ -37,11 +37,11 @@ function acceptTick(tick, source = "live") {
   const symbol = String(tick?.symbol || "");
   const quote = Number(tick?.quote), epoch = Number(tick?.epoch);
   const precision = normalizePipSize(tick?.pip_size, quote) ?? symbols.get(symbol)?.pipSize;
-  if (!symbol || !Number.isFinite(quote) || !Number.isSafeInteger(epoch) || precision === undefined) return;
+  if (!symbol || !Number.isFinite(quote) || !Number.isSafeInteger(epoch) || precision === undefined) return "invalid";
   const providerId = tick.id == null ? "" : String(tick.id);
   const tickUid = providerId || `${symbol}:${epoch}:${quote}`;
   const key = `${symbol}:${tickUid}`;
-  if (seen.has(key)) return;
+  if (seen.has(key)) return "duplicate";
   if (queue.length >= MAX_QUEUE) throw new Error("Research queue reached its hard memory limit");
   seen.add(key);
   if (seen.size > 100000) seen = new Set([...seen].slice(-50000));
@@ -58,6 +58,7 @@ function acceptTick(tick, source = "live") {
   }
   totalTicks++;
   if (queue.length >= FLUSH_COUNT) void flush().catch(error => console.error("[research] flush:", error.message));
+  return "accepted";
 }
 
 async function commitBatch(batch) {
@@ -200,6 +201,9 @@ async function connect() {
 
   const frameCounts = new Map();
   let tickFrames = 0;
+  let acceptedTickFrames = 0;
+  let invalidTickFrames = 0;
+  let duplicateTickFrames = 0;
   let ignoredTickFrames = 0;
 
   socket.addEventListener("message", event => {
@@ -288,7 +292,12 @@ async function connect() {
           break;
         }
       }
-      try { acceptTick(message.tick, "live"); }
+      try {
+        const result = acceptTick(message.tick, "live");
+        if (result === "accepted") acceptedTickFrames++;
+        else if (result === "duplicate") duplicateTickFrames++;
+        else invalidTickFrames++;
+      }
       catch (error) {
         console.error("[research] queue:", error.message);
         socket.close();
@@ -323,7 +332,7 @@ async function connect() {
   feedStatsTimer = setInterval(() => {
     const age = lastLiveTickAt ? Math.round((Date.now() - lastLiveTickAt) / 1000) : null;
     const frames = [...frameCounts.entries()].map(([name, count]) => `${name}=${count}`).join(" ");
-    console.log(`[research] live-feed stats: accepted_live_ticks=${liveTickCount} tick_frames=${tickFrames} ignored_tick_frames=${ignoredTickFrames} symbols=${firstLiveTickSymbols.size}/${symbols.size} last_live_tick_age_s=${age ?? "none"} pending_streams=${pendingSubscriptions.size} stream_ids=${subscriptionIds.size}/${symbols.size} frames={${frames}}`);
+    console.log(`[research] live-feed stats: accepted_live_ticks=${liveTickCount} tick_frames=${tickFrames} accepted_tick_frames=${acceptedTickFrames} invalid_tick_frames=${invalidTickFrames} duplicate_tick_frames=${duplicateTickFrames} ignored_tick_frames=${ignoredTickFrames} symbols=${firstLiveTickSymbols.size}/${symbols.size} last_live_tick_age_s=${age ?? "none"} pending_streams=${pendingSubscriptions.size} stream_ids=${subscriptionIds.size}/${symbols.size} frames={${frames}}`);
   }, 30000);
 }
 
