@@ -16,12 +16,12 @@ export function wilson95(successes, total) {
 
 export async function loadResearchTicks(directory) {
   const names = (await readdir(directory)).filter(n =>
-    /^ticks-\\d{4}-\\d{2}-\\d{2}\\.jsonl\\.gz$/.test(n) ||
-    /^batch-v1-[a-f0-9]{64}\\.jsonl\\.gz$/.test(n)).sort();
+    /^ticks-\d{4}-\d{2}-\d{2}\.jsonl\.gz$/.test(n) ||
+    /^batch-v1-[a-f0-9]{64}\.jsonl\.gz$/.test(n)).sort();
   const symbols = new Map();
   for (const name of names) {
     const text = gunzipSync(await readFile(join(directory, name))).toString('utf8');
-    for (const line of text.split('\\n')) {
+    for (const line of text.split('\n')) {
       if (!line) continue;
       let row;
       try { row = JSON.parse(line); } catch { continue; }
