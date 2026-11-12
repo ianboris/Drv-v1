@@ -20,7 +20,7 @@ const instance = randomUUID();
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const utcDay = epoch => new Date(epoch * 1000).toISOString().slice(0, 10);
 
-let socket, reqId = 1, queue = [], symbols = new Map(), seen = new Set();
+let socket, reqId = 1, queue = [], symbols = new Map(), seen = new Set(), subscriptionIds = new Map();
 let flushing = false, stopping = false, reconnects = 0, totalTicks = 0;
 let lastTickAt = null, lastLiveTickAt = null, feedStartedAt = null;
 let heartbeatTimer, flushTimer, healthTimer, feedStatsTimer;
@@ -183,51 +183,42 @@ async function writeHealth(state, error = null) {
   totalTicks = 0;
 }
 
-function requestHistory(symbol) {
-  return new Promise((resolve, reject) => {
-    const id = reqId++;
-    const timer = setTimeout(() => {
-      socket?.removeEventListener("message", onMessage);
-      reject(new Error("History request timed out"));
-    }, 12000);
-    const onMessage = event => {
-      let message;
-      try { message = JSON.parse(String(event.data)); } catch { return; }
-      if (Number(message.req_id) !== id) return;
-      clearTimeout(timer);
-      socket.removeEventListener("message", onMessage);
-      if (message.error) reject(new Error(message.error.message));
-      else resolve(message);
-    };
-    socket.addEventListener("message", onMessage);
-    send({ticks_history:symbol, adjust_start_time:1, count:1000, end:"latest", style:"ticks", req_id:id});
-  });
-}
-
 async function connect() {
   socket = new WebSocket(URL);
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Deriv connection timed out")), 15000);
     socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, {once:true});
-    socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("Deriv WebSocket failed")); }, {once:true});
+    socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("Deriv WebSocket failed during connection")); }, {once:true});
   });
+
   feedStartedAt = Date.now();
   lastLiveTickAt = null;
   liveTickCount = 0;
   firstLiveTickSymbols.clear();
   pendingSubscriptions.clear();
+  subscriptionIds.clear();
+
+  const frameCounts = new Map();
+  let tickFrames = 0;
+  let ignoredTickFrames = 0;
+
   socket.addEventListener("message", event => {
     let message;
-    try { message = JSON.parse(String(event.data)); } catch { return; }
+    try { message = JSON.parse(String(event.data)); }
+    catch { console.warn("[research] ignored non-JSON WebSocket frame"); return; }
+
+    const type = message.msg_type || "unknown";
+    frameCounts.set(type, (frameCounts.get(type) || 0) + 1);
+
     if (message.error) {
-      const symbol = pendingSubscriptions.get(Number(message.req_id));
-      console.warn(`[research] Deriv response error${symbol ? ` for ${symbol}` : ""} (req_id=${message.req_id}):`, message.error.message);
-      pendingSubscriptions.delete(Number(message.req_id));
+      const id = Number(message.req_id);
+      const symbol = pendingSubscriptions.get(id);
+      console.warn(`[research] Deriv response error${symbol ? ` for ${symbol}` : ""} (req_id=${message.req_id ?? "none"}, msg_type=${type}): `, message.error.message);
+      pendingSubscriptions.delete(id);
       return;
     }
-    if (message.msg_type === "active_symbols") {
-      // Only collect open, unsuspended random indices. Deriv also labels
-      // Boom/Crash instruments as synthetic_index, so market alone is not enough.
+
+    if (type === "active_symbols") {
       const allowed = (message.active_symbols || []).filter(item =>
         item.market === "synthetic_index" &&
         item.submarket === "random_index" &&
@@ -235,65 +226,105 @@ async function connect() {
         item.is_trading_suspended === 0 &&
         Boolean(item.underlying_symbol) &&
         !/boom|crash/i.test(`${item.underlying_symbol} ${item.underlying_symbol_name || ""}`));
+
       symbols = new Map(allowed.slice(0, MAX_SYMBOLS).map(item =>
         [item.underlying_symbol, {pipSize:normalizePipSize(item.pip_size)}]));
       console.log(`[research] eligible random indices: ${allowed.length}; subscribing to: ${[...symbols.keys()].join(", ")}`);
+
+      // A single request supplies initial history and the continuing tick stream.
       for (const symbol of symbols.keys()) {
-        const id = send({ticks:symbol, subscribe:1});
+        const id = send({
+          ticks_history:symbol, adjust_start_time:1, count:1000,
+          end:"latest", style:"ticks", subscribe:1
+        });
         pendingSubscriptions.set(id, symbol);
+        console.log(`[research] requested history+live stream: ${symbol} (req_id=${id})`);
       }
       void writeHealth("CONNECTED").catch(error => console.error("[research] health:", error.message));
-    } else if (message.msg_type === "tick" && message.tick) {
+      return;
+    }
+
+    if (type === "history") {
+      const id = Number(message.req_id);
+      const symbol = pendingSubscriptions.get(id) || String(message.echo_req?.ticks_history || "");
+      if (!symbols.has(symbol)) {
+        console.warn(`[research] history response could not be matched to a selected symbol (req_id=${message.req_id ?? "none"})`);
+        return;
+      }
+
+      const prices = message.history?.prices || [];
+      const times = message.history?.times || [];
+      const precision = normalizePipSize(message.pip_size, prices.at(-1)) ?? symbols.get(symbol)?.pipSize;
+      if (precision !== undefined) symbols.set(symbol, {pipSize:precision});
+      if (message.subscription?.id) subscriptionIds.set(symbol, message.subscription.id);
+
+      let accepted = 0;
+      for (let i = 0; i < Math.min(prices.length, times.length); i++) {
+        const before = queue.length;
+        acceptTick({symbol, quote:prices[i], epoch:times[i], pip_size:precision}, "backfill");
+        if (queue.length > before) accepted++;
+      }
+      console.log(`[research] history received: ${symbol} rows=${prices.length} accepted=${accepted} stream_id=${message.subscription?.id || "not-provided"}`);
+      return;
+    }
+
+    if (type === "tick" && message.tick) {
+      tickFrames++;
       const symbol = String(message.tick.symbol || "");
-      if (symbols.has(symbol)) {
-        for (const [requestId, pendingSymbol] of pendingSubscriptions) {
-          if (pendingSymbol === symbol) {
-            console.log(`[research] subscription confirmed by live tick: ${symbol} (req_id=${requestId})`);
-            pendingSubscriptions.delete(requestId);
-            break;
-          }
+      if (!symbols.has(symbol)) {
+        ignoredTickFrames++;
+        if (symbol && !unexpectedTickSymbols.has(symbol)) {
+          unexpectedTickSymbols.add(symbol);
+          console.warn(`[research] ignored tick for unselected symbol: ${symbol}`);
         }
-        try { acceptTick(message.tick); }
-        catch (error) { console.error("[research] queue:", error.message); socket.close(); }
-      } else if (symbol && !unexpectedTickSymbols.has(symbol)) {
-        unexpectedTickSymbols.add(symbol);
-        console.warn(`[research] ignored tick for unselected symbol: ${symbol}`);
+        return;
       }
+
+      if (message.subscription?.id) subscriptionIds.set(symbol, message.subscription.id);
+      for (const [requestId, pendingSymbol] of pendingSubscriptions) {
+        if (pendingSymbol === symbol) {
+          console.log(`[research] live stream confirmed: ${symbol} (req_id=${requestId}, stream_id=${message.subscription?.id || subscriptionIds.get(symbol) || "not-provided"})`);
+          pendingSubscriptions.delete(requestId);
+          break;
+        }
+      }
+      try { acceptTick(message.tick, "live"); }
+      catch (error) {
+        console.error("[research] queue:", error.message);
+        socket.close();
+      }
+      return;
+    }
+
+    const symbol = pendingSubscriptions.get(Number(message.req_id));
+    if (symbol) {
+      console.log(`[research] subscription response for ${symbol}: msg_type=${type} stream_id=${message.subscription?.id || "not-provided"}`);
+      if (message.subscription?.id) subscriptionIds.set(symbol, message.subscription.id);
     } else {
-      const symbol = pendingSubscriptions.get(Number(message.req_id));
-      if (symbol) {
-        console.log(`[research] subscription response for ${symbol}: msg_type=${message.msg_type || "unknown"} subscription_id=${message.subscription?.id || "not-provided"}`);
-        pendingSubscriptions.delete(Number(message.req_id));
-      } else if (message.msg_type) {
-        console.log(`[research] Deriv response: msg_type=${message.msg_type} req_id=${message.req_id ?? "none"}`);
-      }
+      console.log(`[research] Deriv response: msg_type=${type} req_id=${message.req_id ?? "none"}`);
     }
   });
-  socket.addEventListener("close", () => { if (!stopping) console.warn("[research] Deriv socket closed"); });
+
+  socket.addEventListener("error", () => console.warn("[research] Deriv WebSocket emitted an error event"));
+  socket.addEventListener("close", event => {
+    console.warn(`[research] Deriv socket closed: code=${event.code} clean=${event.wasClean} reason=${event.reason || "none"}`);
+  });
+
   send({active_symbols:"brief"});
   const symbolsDeadline = Date.now() + 15000;
-  while (symbols.size === 0 && Date.now() < symbolsDeadline && socket?.readyState === WebSocket.OPEN) {
-    await sleep(100);
-  }
+  while (symbols.size === 0 && Date.now() < symbolsDeadline && socket?.readyState === WebSocket.OPEN) await sleep(100);
   if (symbols.size === 0) throw new Error("Deriv active_symbols returned no eligible synthetic indices within 15 seconds");
-  heartbeatTimer = setInterval(() => { try { send({ping:1}); } catch {} }, 25000);
+
+  heartbeatTimer = setInterval(() => {
+    try { send({ping:1}); }
+    catch (error) { console.warn("[research] ping send failed:", error.message); }
+  }, 25000);
+
   feedStatsTimer = setInterval(() => {
     const age = lastLiveTickAt ? Math.round((Date.now() - lastLiveTickAt) / 1000) : null;
-    console.log(`[research] live-feed stats: ticks=${liveTickCount} symbols=${firstLiveTickSymbols.size}/${symbols.size} last_live_tick_age_s=${age ?? "none"} pending_subscriptions=${pendingSubscriptions.size}`);
+    const frames = [...frameCounts.entries()].map(([name, count]) => `${name}=${count}`).join(" ");
+    console.log(`[research] live-feed stats: accepted_live_ticks=${liveTickCount} tick_frames=${tickFrames} ignored_tick_frames=${ignoredTickFrames} symbols=${firstLiveTickSymbols.size}/${symbols.size} last_live_tick_age_s=${age ?? "none"} pending_streams=${pendingSubscriptions.size} stream_ids=${subscriptionIds.size}/${symbols.size} frames={${frames}}`);
   }, 30000);
-  for (const symbol of symbols.keys()) {
-    if (stopping) break;
-    try {
-      const history = await requestHistory(symbol);
-      const prices = history.history?.prices || [], times = history.history?.times || [];
-      const precision = normalizePipSize(history.pip_size, prices.at(-1));
-      if (precision !== undefined) symbols.set(symbol, {pipSize:precision});
-      for (let i=0; i<prices.length; i++) {
-        acceptTick({symbol, quote:prices[i], epoch:times[i], pip_size:precision}, "backfill");
-      }
-    } catch (error) { console.warn("[research] backfill:", symbol, error.message); }
-    await sleep(150);
-  }
 }
 
 async function main() {
@@ -306,10 +337,14 @@ async function main() {
   while (!stopping) {
     try {
       await connect();
-      reconnects = 0;
+      let stableLiveSince = null;
       while (!stopping && socket?.readyState === WebSocket.OPEN) {
         await sleep(1000);
         if (queue.length) await flush();
+        if (lastLiveTickAt && Date.now() - lastLiveTickAt < 15000) {
+          stableLiveSince ??= Date.now();
+          if (Date.now() - stableLiveSince >= 300000) reconnects = 0;
+        } else stableLiveSince = null;
         const liveReference = lastLiveTickAt || feedStartedAt;
         if (liveReference && Date.now()-liveReference > 90000) throw new Error("No live subscription ticks received for 90 seconds");
       }
