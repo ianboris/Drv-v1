@@ -42,7 +42,7 @@ test('compressed archives load, deduplicate overlap, and prefer live provenance'
       {symbol:'1HZ10V',epoch:2,digit:5,tick_uid:'next',source:'live'}
     ];
     await writeFile(join(dir,'batch-v1-'+ 'a'.repeat(64)+'.jsonl.gz'),
-      gzipSync(rows.map(x=>JSON.stringify(x)).join('\\n')+'\\n'));
+      gzipSync(rows.map(x=>JSON.stringify(x)).join('\n')+'\n'));
     const loaded=await loadResearchTicks(dir);
     assert.equal(loaded.get('1HZ10V').length,2);
     assert.equal(loaded.get('1HZ10V')[0].source,'live');
