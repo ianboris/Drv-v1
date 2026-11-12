@@ -5,6 +5,7 @@ import { calculateContractEconomics } from './riskCalculator';
 import { runWalkForwardBacktest, type WalkForwardBacktestResult } from './backtest';
 import { digitFromQuote, normalizePipSize } from './market-data.mjs';
 import { selectForecastModel } from './advanced-model.mjs';
+import { createDigitProposalRequest } from './digit-contracts.mjs';
 
 // Public, read-only market-data endpoint for the current Deriv API.
 // No App ID or account token is required for public symbols, ticks, history, or proposals.
@@ -1159,9 +1160,12 @@ function App() {
     const reqId = demoRequestIdRef.current++;
     demoOrderRequestsRef.current.set(reqId, { kind: 'proposal', symbol: marketSymbol, strategy, targetDigit });
     armDemoOrderTimeout(reqId, 'proposal', 12000);
-    const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : strategy === 'MATCHES' ? 'DIGITMATCH' : strategy === 'EVEN' ? 'DIGITEVEN' : 'DIGITODD';
     try {
-      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, ...(strategy === 'DIFFERS' || strategy === 'MATCHES' ? { barrier: String(targetDigit) } : {}), subscribe: 1, req_id: reqId }));
+      const proposal = createDigitProposalRequest({
+        strategy, symbol: marketSymbol, amount: settingsRef.current.stake,
+        currency: accountCurrency, targetDigit, reqId,
+      });
+      socket.send(JSON.stringify(proposal));
       setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
     } catch {
       clearDemoOrderTimeout(reqId);
