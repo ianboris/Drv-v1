@@ -36,13 +36,14 @@ export async function loadResearchTicks(directory) {
   }
   for (const [symbol, rows] of symbols) {
     rows.sort((a,b) => a.epoch - b.epoch || a.tickUid.localeCompare(b.tickUid));
-    const seen = new Set();
-    symbols.set(symbol, rows.filter(row => {
-      if (!row.tickUid) return true;
-      const key = row.tickUid;
-      if (seen.has(key)) return false;
-      seen.add(key); return true;
-    }));
+    const unique = new Map();
+    for (const row of rows) {
+      if (!row.tickUid) { unique.set(`unknown:${unique.size}`, row); continue; }
+      const previous = unique.get(row.tickUid);
+      // Preserve live provenance when a historical backfill overlaps an archived live tick.
+      if (!previous || (previous.source !== 'live' && row.source === 'live')) unique.set(row.tickUid, row);
+    }
+    symbols.set(symbol, [...unique.values()].sort((a,b) => a.epoch-b.epoch));
   }
   return symbols;
 }
@@ -106,12 +107,13 @@ export function analyzeSymbolTicks(rows, windows = RESEARCH_WINDOWS) {
     symbol: ordered[0]?.symbol || null, totalTicks: ordered.length, liveTicks: live,
     backfillTicks: backfill, unknownSourceTicks: ordered.length-live-backfill,
     firstEpoch: ordered[0]?.epoch ?? null, lastEpoch: ordered.at(-1)?.epoch ?? null,
-    windows: [], contracts: contractDiagnostics(digits),
+    windows: [], liveWindows: [], contracts: contractDiagnostics(digits),
     split: { trainingEnd: Math.floor(ordered.length*.6), validationEnd: Math.floor(ordered.length*.8),
       validationShare: .2, holdoutShare: .2 },
     validation: {}, holdout: {},
     warnings: []
   };
+  const liveDigits = ordered.filter(r=>r.source==='live').map(r=>r.digit);
   for (const size of windows) {
     if (digits.length < size) continue;
     const sample = digits.slice(-size), f = frequencies(sample);
