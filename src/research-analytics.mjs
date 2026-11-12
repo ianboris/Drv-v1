@@ -3,7 +3,6 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export const RESEARCH_WINDOWS = [100, 500, 1000, 5000];
-const CONTRACTS = ['DIFFERS', 'MATCHES', 'EVEN', 'ODD'];
 
 export function wilson95(successes, total) {
   if (!total) return { lower: null, upper: null };
@@ -57,8 +56,7 @@ function frequencies(digits) {
 function scorePredictions(rows, start, end, window) {
   const counts = Array(10).fill(0.5);
   for (let j = start - window; j < start; j++) counts[rows[j].digit]++;
-  let logLoss = 0, brier = 0, n = 0, wins = 0;
-  const parity = { EVEN: { wins: 0, n: 0 }, ODD: { wins: 0, n: 0 } };
+  let logLoss = 0, brier = 0, n = 0;
   for (let i = start; i < end; i++) {
     const total = counts.reduce((a,b) => a+b, 0);
     const p = counts.map(x => x / total);
@@ -66,8 +64,6 @@ function scorePredictions(rows, start, end, window) {
     logLoss -= Math.log(Math.max(1e-12, p[actual]));
     for (let d=0; d<10; d++) brier += (p[d] - (actual === d ? 1 : 0)) ** 2;
     n++;
-    parity[actual % 2 ? 'ODD' : 'EVEN'].wins++;
-    parity.EVEN.n++; parity.ODD.n++;
     counts[rows[i-window].digit]--;
     counts[actual]++;
   }
@@ -125,6 +121,12 @@ export function analyzeSymbolTicks(rows, windows = RESEARCH_WINDOWS) {
       mostFrequentDigit: f.counts.indexOf(Math.max(...f.counts)),
       leastFrequentDigit: f.counts.indexOf(Math.min(...f.counts))
     });
+    if (liveDigits.length >= size) {
+      const liveSample = liveDigits.slice(-size), liveF = frequencies(liveSample);
+      const liveEven = liveSample.filter(d=>d%2===0).length;
+      result.liveWindows.push({size, counts:liveF.counts, probabilities:liveF.probabilities,
+        evenRate:liveEven/size, oddRate:(size-liveEven)/size});
+    }
   }
   const validationStart = Math.floor(ordered.length*.6), holdoutStart = Math.floor(ordered.length*.8);
   for (const size of windows) {
