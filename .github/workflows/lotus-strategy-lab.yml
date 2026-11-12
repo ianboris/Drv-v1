@@ -3,6 +3,9 @@ name: Lotus strategy lab verification
 on:
   pull_request:
     paths:
+      - 'src/research-analytics.mjs'
+      - 'tests/research-analytics.test.mjs'
+      - 'scripts/lotus-research-report.mjs'
       - 'src/strategy-lab.mjs'
       - 'src/advanced-model.mjs'
       - 'src/advanced-model.d.mts'
@@ -20,6 +23,9 @@ on:
       - feat/lotus-stake-window-optimization
       - feat/lotus-advanced-model
     paths:
+      - 'src/research-analytics.mjs'
+      - 'tests/research-analytics.test.mjs'
+      - 'scripts/lotus-research-report.mjs'
       - 'src/strategy-lab.mjs'
       - 'src/advanced-model.mjs'
       - 'src/advanced-model.d.mts'
