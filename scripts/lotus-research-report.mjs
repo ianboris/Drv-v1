@@ -10,16 +10,18 @@ const archiveDir=resolve(arg('--archive-dir','/var/lib/lotus/research'));
 const out=resolve(arg('--out','./lotus-research-report.json'));
 const payoutFile=arg('--payouts');
 const currency=String(arg('--currency','USD')).toUpperCase();
+const stake=Number(arg('--stake','5'));
+if (!(stake>0 && Number.isFinite(stake))) throw new Error('Pass a positive --stake value.');
 const snapshots=payoutFile ? JSON.parse(await readFile(resolve(payoutFile),'utf8')) : null;
 const archives=await loadResearchTicks(archiveDir);
 const markets=[...archives.entries()].map(([symbol,rows])=>({
   ...analyzeSymbolTicks(rows),
   advancedForecastLab: evaluateAdvancedModel(rows.map(r=>r.digit),symbol,
-    snapshots ? parsePayoutSnapshots(snapshots) : null,{currency})
+    snapshots ? parsePayoutSnapshots(snapshots) : null,{currency, stakes:[stake]})
 }));
 const report={
   generatedAt:new Date().toISOString(), currency,
-  benchmark:{stakeUsd:5, sessionStopLossUsd:10, rollingWindows:[100,500,1000,5000]},
+  benchmark:{stake, sessionStopLoss:10, currency, rollingWindows:[100,500,1000,5000]},
   markets,
   executionGate:{
     liveExecutionEnabled:false,
