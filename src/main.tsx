@@ -18,8 +18,8 @@ type ChoiceOutcome = { id: string; symbol: string; barrier: number; predictedEpo
 type ResearchStrategy = 'DIFFERS' | 'MATCHES' | 'EVEN' | 'ODD';
 type ResearchDecision = { id: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; predictedEpoch: number; settledEpoch: number | null; outcomeDigit: number | null; correct: boolean | null; analysisWindow: number; sampleSize: number; empiricalRate: number; modelVersion: string };
 type PendingResearch = { decision_uid: string; symbol: string; strategy: ResearchStrategy; target_digit: number; predicted_at_epoch: number; analysis_window: number; sample_size: number; empirical_rate: number; model_version: string };
-type DemoDigitTrade = { contractId: string; accountId: string; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
-type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: 'DIFFERS' | 'MATCHES'; targetDigit: number; proposalId?: string; askPrice?: number; proposalSubscriptionId?: string };
+type DemoDigitTrade = { contractId: string; accountId: string; symbol: string; strategy: ResearchStrategy; targetDigit: number; stake: number; status: string; pnl: number; openedAt: number; closedAt?: number };
+type DemoOrderRequest = { kind: 'proposal' | 'buy'; symbol: string; strategy: ResearchStrategy; targetDigit: number; proposalId?: string; askPrice?: number; proposalSubscriptionId?: string };
 const DEMO_TRADES_KEY = 'lotus-demo-digit-trades-v1';
 const DEMO_DAILY_KEY = 'lotus-demo-digit-daily-v1';
 function readDemoTrades(): DemoDigitTrade[] { try { const value = JSON.parse(localStorage.getItem(DEMO_TRADES_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } }
@@ -94,7 +94,7 @@ function wilsonLowerBound(wins: number, total: number, z = 1.96): number {
 // Validate once per historical dataset/strategy/window. The cache prevents a full backtest
 // from running again on every live tick while still invalidating when the market history changes.
 const walkForwardEvidenceCache = new Map<string, { sampleId: string; result: WalkForwardBacktestResult }>();
-function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: 'DIFFERS' | 'MATCHES', windowSize: number): WalkForwardBacktestResult | null {
+function getWalkForwardEvidence(marketSymbol: string, ticks: Tick[], strategy: ResearchStrategy, windowSize: number): WalkForwardBacktestResult | null {
   const historyTicks = ticks.filter(tick => tick.source === 'history').slice(-5500);
   const sampleId = historyTicks.length ? historyTicks[historyTicks.length - 1].id : '';
   const cacheKey = `${marketSymbol}:${strategy}:${windowSize}`;
@@ -483,7 +483,7 @@ function App() {
                   const priorStats = priorDigits.length >= windowSizeRef.current ? getStats(priorDigits) : null;
                   if (priorStats && demoAutoTradingRef.current && marketSymbol === selectedSymbolRef.current) {
                     const demoStrategy = analysisStateRef.current.strategy;
-                    const demoTarget = demoStrategy === 'DIFFERS' ? priorStats.barrier : demoStrategy === 'MATCHES' ? priorStats.counts.indexOf(Math.max(...priorStats.counts)) : -1;
+                    const demoTarget = demoStrategy === 'DIFFERS' ? priorStats.barrier : demoStrategy === 'MATCHES' ? priorStats.counts.indexOf(Math.max(...priorStats.counts)) : demoStrategy === 'EVEN' ? 0 : 1;
                     if (demoTarget >= 0) requestDemoDigitTrade(marketSymbol, demoStrategy, demoTarget);
                   }
                   if (priorStats && analysisStateRef.current.running) {
@@ -854,7 +854,7 @@ function App() {
         demoReconnectAttemptRef.current = 0;
         setDerivDemoMessage('DEMO WEBSOCKET CONNECTED · NO REAL FUNDS');
         setDemoSocketStatus('CONNECTED');
-        setDemoTradeMessage('Demo order channel ready. Start a Differs or Matches demo session from the Engine page.');
+        setDemoTradeMessage('Demo order channel ready. Choose Differs, Matches, Even or Odd on the Engine page to start a demo session.');
         setDerivDemoBusy(false);
 
         // Keep the authenticated channel alive; every reconnect obtains a new OTP.
@@ -1142,7 +1142,7 @@ function App() {
   function requestDemoDigitTrade(marketSymbol: string, strategy: ResearchStrategy, targetDigit: number) {
     const socket = demoWs.current;
     if (!demoAutoTradingRef.current || !socket || socket.readyState !== WebSocket.OPEN) return;
-    if (marketSymbol !== selectedSymbolRef.current || strategy !== 'DIFFERS') return;
+    if (marketSymbol !== selectedSymbolRef.current) return;
     const accountCurrency = demoCurrencyRef.current;
     if (!accountCurrency) { setDemoTradeMessage('Select a verified demo account with a known currency before trading.'); return; }
     if (openDemoContractRef.current || demoOrderRequestsRef.current.size) return;
@@ -1159,9 +1159,9 @@ function App() {
     const reqId = demoRequestIdRef.current++;
     demoOrderRequestsRef.current.set(reqId, { kind: 'proposal', symbol: marketSymbol, strategy, targetDigit });
     armDemoOrderTimeout(reqId, 'proposal', 12000);
-    const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : 'DIGITMATCH';
+    const contractType = strategy === 'DIFFERS' ? 'DIGITDIFF' : strategy === 'MATCHES' ? 'DIGITMATCH' : strategy === 'EVEN' ? 'DIGITEVEN' : 'DIGITODD';
     try {
-      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, barrier: String(targetDigit), subscribe: 1, req_id: reqId }));
+      socket.send(JSON.stringify({ proposal: 1, amount: settingsRef.current.stake, basis: 'stake', contract_type: contractType, currency: accountCurrency, duration: 1, duration_unit: 't', underlying_symbol: marketSymbol, ...(strategy === 'DIFFERS' || strategy === 'MATCHES' ? { barrier: String(targetDigit) } : {}), subscribe: 1, req_id: reqId }));
       setDemoTradeMessage(`Requesting a fresh ${strategy} demo quote on ${marketSymbol}, target ${targetDigit}…`);
     } catch {
       clearDemoOrderTimeout(reqId);
@@ -1345,7 +1345,7 @@ function App() {
         <small className="muted">These are model-estimated next-digit probabilities, not calibrated guarantees. A low log-loss model on a short recent slice is not proof of positive trading expectancy. The demo execution path remains separately gated by walk-forward evidence and fresh payout quotes.</small>
       </section>
       <section className="panel demo-execution-panel">
-        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">Actual one-tick DIFFERS demo contracts only. MATCHES remains research-only until it demonstrates a reliable out-of-sample edge. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
+        <div className="panel-title"><div><div className="section-heading">DEMO CONTRACT EXECUTION</div><p className="muted">One-tick DIFFERS, MATCHES, EVEN and ODD contracts on the verified Deriv demo account only. Each strategy must pass its own walk-forward and fresh-payout checks. Real accounts are not supported.</p></div><span className="demo-execution-badge">DEMO ONLY</span></div>
         <div className="candidate-row"><span>Selected demo account</span><strong>{selectedDemoAccountId || 'Not selected'}</strong></div>
         <div className="candidate-row"><span>Demo currency</span><strong>{demoCurrency || 'Unavailable'}</strong></div>
         <div className="candidate-row"><span>Execution socket</span><strong>{demoSocketStatus}</strong></div>
@@ -1356,15 +1356,15 @@ function App() {
         <div className="candidate-row"><span>Daily profit target</span><strong>{settings.takeProfitLimit.toFixed(2)} {demoCurrency}</strong></div>
         <div className="demo-execution-actions">
           <button className="secondary-button" disabled={!derivDemoConnected || !selectedDemoAccountId || demoSocketStatus === 'CONNECTING' || demoSocketStatus === 'CONNECTED' || derivDemoBusy} onClick={openDerivDemoSession}>CONNECT DEMO EXECUTION</button>
-          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || activeStrategy !== 'DIFFERS' || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Checking historical walk-forward evidence and waiting for the next eligible quote.`); }}>START DEMO BOT</button>
+          <button className="start-button" disabled={demoAutoTrading || Boolean(openDemoContractRef.current) || demoOrderRequestsRef.current.size > 0 || demoSocketStatus !== 'CONNECTED' || !demoCurrency || status !== 'CONNECTED' || stats.sample < settings.windowSize || demoDailyPnl >= settings.takeProfitLimit || demoDailyPnl - settings.stake < -settings.dailyLossLimit - 1e-9} onClick={() => { demoAutoTradingRef.current = true; setDemoAutoTrading(true); setAnalysisRunning(true); setDemoTradeMessage(`Demo ${activeStrategy} bot armed on ${marketName}. Checking strategy-specific walk-forward evidence and fresh payout quotes.`); }}>START DEMO BOT</button>
           <button className="stop-button" disabled={!demoAutoTrading} onClick={() => { demoAutoTradingRef.current = false; for (const [id, request] of demoOrderRequestsRef.current) if (request.kind === 'proposal') demoOrderRequestsRef.current.delete(id); setDemoAutoTrading(false); setDemoTradeMessage('Demo bot stopped. Any submitted buy or open one-tick contract remains with Deriv until settlement.'); }}>STOP DEMO BOT</button>
         </div>
         <p className="muted" aria-live="polite">{demoAutoTrading ? 'AUTOMATION ARMED · DEMO ACCOUNT ONLY' : 'AUTOMATION DISARMED'} · {demoTradeMessage}</p>
         <div className="table-wrap"><table><thead><tr><th>Opened</th><th>Market</th><th>Engine</th><th>Target</th><th>Stake</th><th>Status</th><th>Demo P/L</th></tr></thead><tbody>
-          {[...demoTrades.filter(trade => trade.accountId === selectedDemoAccountId)].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
-          {!demoTrades.some(trade => trade.accountId === selectedDemoAccountId) && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a demo execution session, choose Differs or Matches, then start the demo bot.</td></tr>}
+          {[...demoTrades.filter(trade => trade.accountId === selectedDemoAccountId)].reverse().slice(0,10).map(trade => <tr key={trade.contractId}><td>{new Date(trade.openedAt).toLocaleTimeString()}</td><td>{trade.symbol}</td><td>{trade.strategy}</td><td>{trade.strategy === 'EVEN' ? 'Even' : trade.strategy === 'ODD' ? 'Odd' : trade.targetDigit}</td><td>{trade.stake.toFixed(2)}</td><td>{trade.status}</td><td>{trade.pnl.toFixed(2)}</td></tr>)}
+          {!demoTrades.some(trade => trade.accountId === selectedDemoAccountId) && <tr><td colSpan={7} className="empty">No demo purchases yet. Connect a verified demo session, choose one of the four digit strategies, then start the demo bot.</td></tr>}
         </tbody></table></div>
-        <small className="muted">Controls: one open contract at a time, 1-second cooldown and browser-enforced daily loss and profit stops. Historical walk-forward validation uses the already-loaded tick history; it does not wait for 100 new live paper outcomes. The bot runs only while this dashboard remains open. These controls are demo safeguards, not server-enforced live risk controls. Even/Odd remains research-only.</small>
+        <small className="muted">Controls: one open contract at a time, 1-second cooldown, strategy-specific walk-forward validation (at least 100 test predictions), fresh Deriv proposal, positive conservative expected value, and browser-enforced daily loss/profit stops. Parity contracts omit the digit barrier; Differs/Matches use their selected digit. The bot runs only while this dashboard remains open. These are demo safeguards, not server-enforced live risk controls.</small>
       </section>
 
 
@@ -1479,7 +1479,7 @@ function App() {
             <button className="secondary-button" disabled={derivDemoBusy} onClick={disconnectDerivDemo}>DISCONNECT</button>
           </div>
         </>}
-        <p className="muted">Demo execution is available from the Differs / Matches Engine page after the authenticated demo WebSocket is connected. Lotus submits one-tick contracts only to the verified demo account. The real-account endpoint remains disabled and is never requested by this feature.</p>
+        <p className="muted">Demo execution is available from the four-strategy Engine page after the authenticated demo WebSocket is connected. Lotus submits one-tick contracts only to the verified demo account. The real-account endpoint remains disabled and is never requested by this feature.</p>
       </section>
       <section className="panel safety-panel">
         <div className="section-heading">EXECUTION SAFETY</div>
