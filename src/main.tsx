@@ -1327,7 +1327,7 @@ function App() {
           <div className="candidate-row"><span>Prior-window frequency estimate · not a win probability</span><strong>{stats.sample ? ((activeStrategy === 'DIFFERS' ? 1 - stats.barrierRate : activeStrategy === 'MATCHES' ? Math.max(...stats.probabilities) : rollingDigits.filter(digit => activeStrategy === 'EVEN' ? digit % 2 === 0 : digit % 2 === 1).length / stats.sample) * 100).toFixed(2) + '%' : '—'}</strong></div>
           <div className="candidate-row"><span>Historical sample</span><strong>{stats.sample} / {settings.windowSize}</strong></div>
           <div className="candidate-row"><span>Model confidence</span><strong>Not calibrated</strong></div>
-          <p className="muted">Differs selects the least-frequent digit; Matches selects the most-frequent digit. These are rolling-frequency heuristics, not calibrated probabilities. MATCHES, EVEN and ODD are research-only; only DIFFERS can request a demo purchase, and only when its out-of-sample, payout-adjusted gate passes.</p>
+          <p className="muted">Differs selects the least-frequent digit; Matches selects the most-frequent digit; Even and Odd evaluate parity directly. These are research heuristics, not calibrated probabilities. Any of the four strategies can request a demo purchase only after its own out-of-sample walk-forward evidence, fresh Deriv quote and conservative positive expected-value gate pass.</p>
         </div>
         <div className="control-row research-controls">
           <button className="start-button" onClick={() => setAnalysisRunning(true)} disabled={analysisRunning || stats.sample < settings.windowSize}>START {activeStrategy} ANALYSIS</button>
